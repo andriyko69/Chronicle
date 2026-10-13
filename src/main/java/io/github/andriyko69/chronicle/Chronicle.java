@@ -10,6 +10,7 @@ import net.minecraft.world.level.storage.LevelResource;
 import io.github.andriyko69.chronicle.event.ChronicleClock;
 import io.github.andriyko69.chronicle.runtime.ChronicleRuntime;
 import io.github.andriyko69.chronicle.runtime.InfrastructureConfig;
+import io.github.andriyko69.chronicle.listener.PlayerBlockListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,6 +26,7 @@ public final class Chronicle {
         version = container.getModInfo().getVersion().toString();
         NeoForge.EVENT_BUS.addListener(this::starting);
         NeoForge.EVENT_BUS.addListener(this::stopping);
+        new PlayerBlockListener(() -> runtime, ChronicleClock.system()).register();
     }
     private void starting(ServerAboutToStartEvent event) {
         try {

@@ -94,7 +94,7 @@ class PersistenceTest {
             assertEquals(Set.of("chronicle-persistence", "chronicle-query"), jdbcThreads);
         }
         try (var connection = connection(config.database()); var statement = connection.createStatement();
-                var rows = statement.executeQuery("SELECT event_id,occurred_seconds,occurred_nanos,encoded FROM audit_events")) {
+                var rows = statement.executeQuery("SELECT event_id,occurred_seconds,occurred_nanos,encoded FROM legacy_audit_events")) {
             int count = 0;
             while (rows.next()) {
                 var event = expected.remove(rows.getString(1)); assertNotNull(event);
@@ -111,7 +111,7 @@ class PersistenceTest {
             submit(restarted, event(10001)).journaled().toCompletableFuture().get(5, TimeUnit.SECONDS);
             await(() -> restarted.diagnostics().persisted() == 1);
         }
-        assertEquals(10_001, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(10_001, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
     }
     @Test void quietServerCommitsWithoutWaitingForFullBatch() throws Exception {
         var config = InfrastructureConfig.defaults(root);
@@ -136,12 +136,12 @@ class PersistenceTest {
             await(() -> runtime.diagnostics().retries() > 0);
             assertEquals(ChronicleHealth.STORAGE_UNAVAILABLE, runtime.health());
             assertEquals(0, runtime.diagnostics().deadLetters());
-            assertEquals(0, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+            assertEquals(0, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
             statement.execute("ROLLBACK");
             await(() -> runtime.diagnostics().persisted() == 1000);
             assertEquals(ChronicleHealth.HEALTHY, runtime.health());
         }
-        assertEquals(1000, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(1000, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
         assertEquals(0, scalar(config.database(), "SELECT count(*) FROM dead_letters"));
     }
     @Test void commitSucceededButAcknowledgementLostRemainsIdempotent() throws Exception {
@@ -167,7 +167,7 @@ class PersistenceTest {
             runtime.start().toCompletableFuture().get(10, TimeUnit.SECONDS);
             var journaled = submit(runtime, event(1)).journaled().toCompletableFuture().get(5, TimeUnit.SECONDS);
             await(() -> runtime.diagnostics().retries() > 0 && runtime.diagnostics().committedPosition() == journaled.value());
-            assertEquals(1, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+            assertEquals(1, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
             assertEquals(1, scalar(config.database(), "SELECT terminal_records FROM journal_checkpoint"));
             assertEquals(0, scalar(config.database(), "SELECT count(*) FROM dead_letters"));
         }
@@ -186,15 +186,15 @@ class PersistenceTest {
             assertEquals(2, runtime.diagnostics().persisted()); assertEquals(1, runtime.diagnostics().deadLetters());
         }
         assertEquals(3, scalar(config.database(), "SELECT terminal_records FROM journal_checkpoint"));
-        assertEquals(1, scalar(config.database(), "SELECT count(*) FROM dead_letters WHERE attempts=1 AND schema_version=1 AND classification='PERMANENT_EVENT' AND original_payload IS NOT NULL"));
+        assertEquals(1, scalar(config.database(), "SELECT count(*) FROM dead_letters WHERE attempts=1 AND schema_version=2 AND classification='PERMANENT_EVENT' AND original_payload IS NOT NULL"));
         try (var runtime = open(config)) { assertEquals(last.value(), runtime.diagnostics().committedPosition()); }
-        assertEquals(2, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(2, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
     }
     @Test void sqlCheckPoisonIsIsolatedWithSavepointsInSameTerminalTransaction() throws Exception {
         var config = InfrastructureConfig.defaults(root);
-        try (var runtime = open(config)) { assertEquals(1, runtime.diagnostics().schemaVersion()); }
+        try (var runtime = open(config)) { assertEquals(2, runtime.diagnostics().schemaVersion()); }
         try (var connection = connection(config.database()); var statement = connection.createStatement()) {
-            statement.execute("ALTER TABLE audit_events ADD COLUMN injected_check INTEGER CHECK(synthetic_value <> 'event-2')");
+            statement.execute("ALTER TABLE legacy_audit_events ADD COLUMN injected_check INTEGER CHECK(synthetic_value <> 'event-2')");
         }
         try (var runtime = open(config)) {
             for (int i = 1; i <= 3; i++) submit(runtime, event(i));
@@ -213,11 +213,11 @@ class PersistenceTest {
             assertEquals(ChronicleHealth.CLOSED, runtime.health());
             assertNotNull(runtime.diagnostics().lastFlush());
             assertEquals(100, runtime.diagnostics().journalAppends());
-            assertEquals(0, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+            assertEquals(0, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
             statement.execute("ROLLBACK");
         }
         try (var restarted = open(config)) { await(() -> restarted.diagnostics().persisted() == 100); }
-        assertEquals(100, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(100, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
     }
     @Test void corruptMigrationAndChangedJournalIdentityFailExplicitly() throws Exception {
         var config = InfrastructureConfig.defaults(root);
@@ -228,7 +228,7 @@ class PersistenceTest {
         var runtime = new ChronicleRuntime(config, CLOCK, "test");
         assertThrows(ExecutionException.class, () -> runtime.start().toCompletableFuture().get(10, TimeUnit.SECONDS));
         assertEquals(ChronicleHealth.FATAL_STORAGE, runtime.health()); assertThrows(IllegalStateException.class, runtime::close);
-        assertEquals(0, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(0, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
         var clean = InfrastructureConfig.defaults(root.resolve("other"));
         try (var initialize = open(clean)) { }
         Files.writeString(clean.journal().resolve("chronicle.identity"), UUID.randomUUID().toString());
@@ -255,10 +255,10 @@ class PersistenceTest {
         if (!child.waitFor(30, TimeUnit.SECONDS)) { child.destroyForcibly().waitFor(); fail("Child timed out: " + Files.readString(log)); }
         assertEquals(7, child.exitValue(), Files.readString(log));
         var config = InfrastructureConfig.defaults(root);
-        assertEquals(0, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(0, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
         try (var runtime = open(config)) { await(() -> runtime.diagnostics().persisted() == 1000); }
         try (var runtime = open(config)) { assertEquals(0, runtime.diagnostics().backlog()); }
-        assertEquals(1000, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(1000, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
         assertEquals(1000, scalar(config.database(), "SELECT terminal_records FROM journal_checkpoint"));
     }
     @Test @Tag("stress") void oneHundredThousandEventsStress() throws Exception {
@@ -283,7 +283,7 @@ class PersistenceTest {
             assertTrue(maxQueue <= config.ingressCapacity()); assertTrue(metrics.maxBatchSize() <= 100);
             assertEquals(0, metrics.deadLetters());
         }
-        assertEquals(100_000, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(100_000, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
         assertEquals(100_000, scalar(config.database(), "SELECT terminal_records FROM journal_checkpoint"));
     }
     @Test void exactDuplicateIsIdempotentButConflictingIdRollsBackAndHalts() throws Exception {
@@ -293,7 +293,7 @@ class PersistenceTest {
             journal.append(CODEC.encode(event(2))); journal.sync();
         }
         try (var runtime = open(config)) { await(() -> runtime.diagnostics().backlog() == 0); }
-        assertEquals(2, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(2, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
         assertEquals(3, scalar(config.database(), "SELECT terminal_records FROM journal_checkpoint"));
         long checkpoint = scalar(config.database(), "SELECT committed_position FROM journal_checkpoint");
         try (var journal = new ChronicleQueueJournal(config.journal(), CLOCK)) {
@@ -304,7 +304,7 @@ class PersistenceTest {
         var runtime = open(config);
         await(() -> runtime.health() == ChronicleHealth.FATAL_STORAGE);
         assertThrows(IllegalStateException.class, runtime::close);
-        assertEquals(2, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(2, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
         assertEquals(0, scalar(config.database(), "SELECT count(*) FROM dead_letters"));
         assertEquals(checkpoint, scalar(config.database(), "SELECT committed_position FROM journal_checkpoint"));
     }
@@ -312,11 +312,11 @@ class PersistenceTest {
         var config = InfrastructureConfig.defaults(root); var runtime = open(config);
         submit(runtime, event(1)); await(() -> runtime.diagnostics().persisted() == 1);
         try (var connection = connection(config.database()); var statement = connection.createStatement()) {
-            statement.execute("UPDATE audit_events SET encoded=X'00'");
+            statement.execute("UPDATE legacy_audit_events SET encoded=X'00'");
         }
         assertThrows(ExecutionException.class, () -> runtime.recent(10).toCompletableFuture().get(5, TimeUnit.SECONDS));
         assertEquals(ChronicleHealth.FATAL_STORAGE, runtime.health());
         assertThrows(IllegalStateException.class, runtime::close);
-        assertEquals(1, scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(1, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
     }
 }

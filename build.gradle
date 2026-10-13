@@ -45,7 +45,6 @@ neoForge {
             systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
         }
 
-        // Dormant until real tests exist: an empty GameTest suite fails at startup.
         gameTestServer {
             type = 'gameTestServer'
             gameDirectory = file('run/gametest')
@@ -145,10 +144,28 @@ tasks.register('stressTest', Test) {
 }
 
 sourceSets {
+    gameTest {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.runtimeClasspath
+    }
     spike {
         compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
         runtimeClasspath += sourceSets.main.runtimeClasspath
     }
+}
+
+neoForge.addModdingDependenciesTo(sourceSets.gameTest)
+neoForge.mods {
+    chronicle_test { sourceSet(sourceSets.gameTest) }
+}
+neoForge.runs.configureEach {
+    loadedMods = [neoForge.mods.chronicle]
+}
+neoForge.runs.gameTestServer {
+    sourceSet = sourceSets.gameTest
+    loadedMods = [neoForge.mods.chronicle, neoForge.mods.chronicle_test]
+    additionalRuntimeClasspathConfiguration.extendsFrom(configurations.implementation)
+    systemProperty 'chronicle.gameTestRoot', file('.agent/scratch/game-tests').absolutePath
 }
 
 tasks.register('journalSpike', JavaExec) {

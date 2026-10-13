@@ -4,9 +4,9 @@ Chronicle is a server-side NeoForge 1.21.1 mod being developed into a forensic
 logging, inspection, querying, and rollback system for modded Minecraft.
 Correctness and forensic reliability take priority over feature velocity.
 
-**Early development:** immutable synthetic events can be journaled, persisted
-to SQLite and recovered after process failure. Minecraft audit logging,
-commands, inspection and rollback are not implemented yet.
+**Early development:** player block break and placement observations are captured
+on the logical server thread, journaled, and persisted to SQLite. Commands,
+inspection and rollback are not implemented yet.
 
 Chronicle is intended to run on a dedicated server without requiring players
 to install it on their clients. It currently registers no gameplay content
@@ -101,6 +101,20 @@ Transient failures retry while backlog stays in the journal; permanent payload
 failures enter the transactional DLQ. Corruption or conflicting event identity
 halts progress explicitly. Keep the database and its matching journal together.
 
+Player and FakePlayer hooks capture dimension, coordinates, attribution, canonical
+block states and optional pre-change block entity NBT. Multi-block placements
+produce one delta per position. Records explicitly carry `HOOK_OBSERVATION`:
+NeoForge's uncanceled LOWEST-priority callbacks precede final engine success and
+can precede later cancellation. Break records use air as the intended result,
+including for waterlogged blocks; they do not establish the final fluid state.
+
+Raw NBT serialization is bounded to 64 KiB. Oversized or failed snapshots retain
+block states with an explicit status and no NBT; truncated NBT is never stored.
+Mod block entity save methods can allocate their own tag data before serialization.
+Persisted NBT remains opaque and is not assumed safe to restore across versions.
+V002 preserves synthetic V001 rows in `legacy_audit_events` and supports replaying
+pending version-1 journal records. New envelopes use the STRICT `audit_events` table.
+
 For an existing disposable, loopback-bound NeoForge installation with the mod
 installed and the EULA already accepted:
 
@@ -116,13 +130,16 @@ Pure unit/integration tests use temporary SQLite databases and journals:
 ./gradlew test
 ./gradlew stressTest
 ./gradlew journalSpike
+./gradlew runGameTestServer
 ```
 
 The stress task submits 100,000 synthetic events; it is not a production
-benchmark. `runGameTestServer` is retained for future gameplay tests, but an
-empty suite fails at startup and is not part of CI.
-Use the [version-matched GameTest documentation](https://docs.neoforged.net/docs/1.21.1/misc/gametest/)
-when adding real tests; ordinary `src/test` classes are not automatically game mods.
+benchmark. Live GameTests run from the isolated `src/gameTest` source set and
+exercise player attribution, engine break/place hooks, cancellation, multi-place
+coalescing and NBT capture through journal and SQLite. Accept the EULA in
+`run/gametest/eula.txt` before running them. Test mod classes/resources are excluded
+from ordinary server runs and the shipped JAR; ordinary `src/test` classes are
+not automatically game mods.
 
 [AGENTS.md](AGENTS.md) records development invariants.
 [.agent/PLANS.md](.agent/PLANS.md) describes when a substantive plan is useful;

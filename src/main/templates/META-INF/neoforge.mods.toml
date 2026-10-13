@@ -8,7 +8,7 @@ version="${mod_version}"
 displayName="${mod_name}"
 description='''
 Server-side forensic logging, inspection, and rollback for modded Minecraft.
-Chronicle is in early development; audit and rollback features are not implemented yet.
+Chronicle is in early development with player block audit hooks; rollback is not implemented yet.
 '''
 
 [features.${mod_id}]

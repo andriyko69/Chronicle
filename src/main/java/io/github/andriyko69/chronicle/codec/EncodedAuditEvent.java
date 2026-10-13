@@ -6,7 +6,7 @@ import java.util.Objects;
 
 /** Envelope identity remains readable when the payload version is unsupported. */
 public final class EncodedAuditEvent {
-    public static final int MAX_BYTES = 8192;
+    public static final int MAX_BYTES = BlockDeltaPayloadCodec.MAX_BYTES + 4096;
     private final EventId id;
     private final byte[] bytes;
     public EncodedAuditEvent(EventId id, byte[] bytes) {

@@ -13,6 +13,8 @@ public final class ChronicleMetrics {
     public final AtomicLong retries = new AtomicLong();
     public final AtomicLong persistenceFailures = new AtomicLong();
     public final AtomicLong deadLetters = new AtomicLong();
+    public final AtomicLong droppedEvents = new AtomicLong();
+    public final AtomicLong queueFullDrops = new AtomicLong();
     public final AtomicLong transactions = new AtomicLong();
     public final AtomicLong transactionNanos = new AtomicLong();
     public final AtomicLong maxTransactionNanos = new AtomicLong();
@@ -32,7 +34,7 @@ public final class ChronicleMetrics {
     public record Snapshot(ChronicleHealth health, int ingressDepth, long journalAppends, double appendPerSecond,
             long backlog, long journalDiskBytes, Duration oldestUncommittedAge, long persisted, double persistedPerSecond,
             int currentBatchSize, int maxBatchSize, double maxBatchWaitMillis, double averageTransactionMillis, double maxTransactionMillis,
-            long retries, long persistenceFailures, long deadLetters, long committedPosition, int schemaVersion,
+            long retries, long persistenceFailures, long deadLetters, long droppedEvents, long queueFullDrops, long committedPosition, int schemaVersion,
             Instant lastCommit, Instant lastFlush) {}
 
     public Snapshot snapshot(ChronicleHealth health, int ingressDepth, ChronicleClock clock) {
@@ -43,7 +45,7 @@ public final class ChronicleMetrics {
         return new Snapshot(health, ingressDepth, journalAppends.get(), journalAppends.get() / seconds,
                 backlog, journalDiskBytes, age, persisted.get(), persisted.get() / seconds,
                 currentBatchSize, maxBatchSize, maxBatchWaitNanos.get() / 1e6, transactionNanos.get() / 1e6 / Math.max(1, transactions.get()),
-                maxTransactionNanos.get() / 1e6, retries.get(), persistenceFailures.get(), deadLetters.get(),
+                maxTransactionNanos.get() / 1e6, retries.get(), persistenceFailures.get(), deadLetters.get(), droppedEvents.get(), queueFullDrops.get(),
                 committedPosition, schemaVersion, lastCommit, lastFlush);
     }
 }

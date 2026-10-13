@@ -11,6 +11,9 @@ import io.github.andriyko69.chronicle.runtime.InfrastructureConfig;
 import io.github.andriyko69.chronicle.storage.*;
 import io.github.andriyko69.chronicle.storage.migration.MigrationManager;
 import java.nio.file.Files;
+import java.nio.ByteBuffer;
+import java.time.Instant;
+import java.util.Comparator;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -84,15 +87,45 @@ public final class SQLiteStorageBackend implements StorageBackend {
             } catch (SQLException failure) { throw SQLiteFailureClassifier.classify(failure); }
         }
         private byte[] existing(TerminalRecord record) throws SQLException {
-            try (var lookup = connection.prepareStatement("SELECT encoded FROM audit_events WHERE event_id=? UNION ALL SELECT original_payload FROM dead_letters WHERE event_id=?")) {
+            byte[] found = null;
+            try (var lookup = connection.prepareStatement("SELECT * FROM audit_events WHERE event_id=?")) {
+                lookup.setBytes(1, uuidBytes(record.journal().event().id().value()));
+                try (var rows = lookup.executeQuery()) {
+                    if (rows.next()) found = new ChronicleEventCodec().encode(domainEvent(rows)).bytes();
+                }
+            }
+            try (var lookup = connection.prepareStatement("SELECT encoded FROM legacy_audit_events WHERE event_id=? UNION ALL SELECT original_payload FROM dead_letters WHERE event_id=?")) {
                 lookup.setString(1, record.journal().event().id().toString()); lookup.setString(2, record.journal().event().id().toString());
                 try (var rows = lookup.executeQuery()) {
-                    if (!rows.next()) return null;
-                    byte[] value = rows.getBytes(1);
-                    if (rows.next()) throw new SQLException("Event has conflicting terminal outcomes");
-                    if (!Arrays.equals(value, record.journal().event().bytes())) throw new SQLException("Conflicting payloads for event ID " + record.journal().event().id());
-                    return value;
+                    while (rows.next()) {
+                        if (found != null) throw new SQLException("Event has conflicting terminal outcomes");
+                        found = rows.getBytes(1);
+                    }
                 }
+            }
+            if (found != null && !Arrays.equals(found, record.journal().event().bytes()))
+                throw new SQLException("Conflicting payloads for event ID " + record.journal().event().id());
+            return found;
+        }
+        private void insertEvent(TerminalRecord record) throws SQLException {
+            var event = record.event();
+            if (event.legacy()) {
+                try (var insert = connection.prepareStatement("INSERT INTO legacy_audit_events (event_id,occurred_seconds,occurred_nanos,synthetic_value,encoded) VALUES (?, ?, ?, ?, ?)")) {
+                    insert.setString(1, event.id().toString()); insert.setLong(2, event.occurredAt().getEpochSecond());
+                    insert.setInt(3, event.occurredAt().getNano()); insert.setString(4, event.value());
+                    insert.setBytes(5, record.journal().event().bytes()); insert.executeUpdate();
+                }
+                return;
+            }
+            var envelope = event.envelope();
+            try (var insert = connection.prepareStatement("INSERT INTO audit_events (event_id,occurred_at_sec,occurred_at_nanos,world_id,x,y,z,event_type,actor_type,actor_id,actor_uuid,root_actor_uuid,target_id,payload_version,payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
+                insert.setBytes(1, uuidBytes(event.id().value())); insert.setLong(2, event.occurredAt().getEpochSecond());
+                insert.setInt(3, event.occurredAt().getNano()); insert.setString(4, envelope.worldId());
+                insert.setInt(5, envelope.x()); insert.setInt(6, envelope.y()); insert.setInt(7, envelope.z());
+                insert.setString(8, envelope.eventType()); insert.setString(9, envelope.actorType()); insert.setString(10, envelope.actorId());
+                insert.setBytes(11, uuidBytes(envelope.actorUuid())); insert.setBytes(12, uuidBytes(envelope.rootActorUuid()));
+                insert.setString(13, envelope.targetId()); insert.setInt(14, event.payloadVersion()); insert.setBytes(15, event.payload());
+                insert.executeUpdate();
             }
         }
         @Override public CommitResult commit(Checkpoint expected, List<TerminalRecord> batch) throws StorageFailure {
@@ -123,12 +156,7 @@ public final class SQLiteStorageBackend implements StorageBackend {
                     if (record.deadLetter() != null) { insertDeadLetter(record, record.deadLetter()); deadLetters++; continue; }
                     Savepoint savepoint = connection.setSavepoint();
                     try {
-                        try (var insert = connection.prepareStatement("INSERT INTO audit_events (event_id,occurred_seconds,occurred_nanos,synthetic_value,encoded) VALUES (?, ?, ?, ?, ?) ON CONFLICT(event_id) DO NOTHING")) {
-                            insert.setString(1, record.event().id().toString()); insert.setLong(2, record.event().occurredAt().getEpochSecond());
-                            insert.setInt(3, record.event().occurredAt().getNano()); insert.setString(4, record.event().value());
-                            insert.setBytes(5, record.journal().event().bytes());
-                            if (insert.executeUpdate() != 1) throw new SQLException("Unexpected duplicate after identity check");
-                        }
+                        insertEvent(record);
                         persisted++;
                     } catch (SQLException failure) {
                         var classified = SQLiteFailureClassifier.classify(failure);
@@ -182,14 +210,21 @@ public final class SQLiteStorageBackend implements StorageBackend {
         @Override public List<AuditEvent> recent(int limit) throws StorageFailure {
             if (Thread.currentThread() != owner) throw new IllegalStateException("Reader used off its owning thread");
             if (limit < 1 || limit > 1000) throw new IllegalArgumentException("Query limit must be 1..1000");
-            try (var select = connection.prepareStatement("SELECT event_id,encoded FROM audit_events ORDER BY occurred_seconds DESC,occurred_nanos DESC,event_id DESC LIMIT ?")) {
-                select.setInt(1, limit);
+            try {
                 var values = new ArrayList<AuditEvent>();
-                var codec = new ChronicleEventCodec();
-                try (var rows = select.executeQuery()) {
-                    while (rows.next()) values.add(codec.decode(new EncodedAuditEvent(new EventId(UUID.fromString(rows.getString(1))), rows.getBytes(2))));
+                try (var select = connection.prepareStatement("SELECT * FROM audit_events ORDER BY occurred_at_sec DESC,occurred_at_nanos DESC,event_id DESC LIMIT ?")) {
+                    select.setInt(1, limit);
+                    try (var rows = select.executeQuery()) { while (rows.next()) values.add(domainEvent(rows)); }
                 }
-                return List.copyOf(values);
+                try (var select = connection.prepareStatement("SELECT event_id,encoded FROM legacy_audit_events ORDER BY occurred_seconds DESC,occurred_nanos DESC,event_id DESC LIMIT ?")) {
+                    select.setInt(1, limit);
+                    var codec = new ChronicleEventCodec();
+                    try (var rows = select.executeQuery()) {
+                        while (rows.next()) values.add(codec.decode(new EncodedAuditEvent(new EventId(UUID.fromString(rows.getString(1))), rows.getBytes(2))));
+                    }
+                }
+                values.sort(Comparator.comparing(AuditEvent::occurredAt).thenComparing(AuditEvent::id).reversed());
+                return List.copyOf(values.subList(0, Math.min(limit, values.size())));
             } catch (SQLException failure) { throw SQLiteFailureClassifier.classify(failure); }
             catch (Exception failure) { throw fatal("Corrupt stored canonical event", failure); }
         }
@@ -197,6 +232,26 @@ public final class SQLiteStorageBackend implements StorageBackend {
             if (Thread.currentThread() != owner) throw new IllegalStateException("Reader closed off its owning thread");
             try { connection.close(); } catch (SQLException failure) { throw SQLiteFailureClassifier.classify(failure); }
         }
+    }
+    private static byte[] uuidBytes(UUID value) {
+        return value == null ? null : ByteBuffer.allocate(16).putLong(value.getMostSignificantBits()).putLong(value.getLeastSignificantBits()).array();
+    }
+    private static UUID uuid(byte[] bytes) {
+        if (bytes == null) return null;
+        if (bytes.length != 16) throw new IllegalArgumentException("Corrupt UUID length");
+        var buffer = ByteBuffer.wrap(bytes);
+        return new UUID(buffer.getLong(), buffer.getLong());
+    }
+    private static AuditEvent domainEvent(ResultSet rows) throws SQLException {
+        try {
+            int nanos = rows.getInt("occurred_at_nanos");
+            if (nanos < 0 || nanos > 999_999_999) throw new IllegalArgumentException("Corrupt event nanos");
+            var envelope = new EventEnvelope(rows.getString("world_id"), rows.getInt("x"), rows.getInt("y"), rows.getInt("z"),
+                    rows.getString("event_type"), rows.getString("actor_type"), rows.getString("actor_id"),
+                    uuid(rows.getBytes("actor_uuid")), uuid(rows.getBytes("root_actor_uuid")), rows.getString("target_id"));
+            return new AuditEvent(new EventId(uuid(rows.getBytes("event_id"))), Instant.ofEpochSecond(rows.getLong("occurred_at_sec"), nanos),
+                    envelope, rows.getInt("payload_version"), rows.getBytes("payload"));
+        } catch (RuntimeException failure) { throw new SQLException("Corrupt stored domain event", failure); }
     }
     private static StorageFailure fatal(String message, Throwable cause) {
         return new StorageFailure(StorageFailure.Kind.FATAL, message, null, cause);

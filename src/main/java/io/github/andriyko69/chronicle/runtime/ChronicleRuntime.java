@@ -78,8 +78,11 @@ public final class ChronicleRuntime implements AutoCloseable {
             else if (!accepting) status = Submission.Status.NOT_READY;
             else status = ingress.offer(new Pending(encoded, acknowledgement)) ? Submission.Status.ACCEPTED : Submission.Status.QUEUE_FULL;
         }
-        if (status != Submission.Status.ACCEPTED)
+        if (status != Submission.Status.ACCEPTED) {
+            metrics.droppedEvents.incrementAndGet();
+            if (status == Submission.Status.QUEUE_FULL) metrics.queueFullDrops.incrementAndGet();
             acknowledgement.completeExceptionally(new RejectedExecutionException("Chronicle submission rejected: " + status));
+        }
         return new Submission(status, acknowledgement.minimalCompletionStage());
     }
     /** Results are detached. Callers touching Minecraft must dispatch them through server.execute. */
@@ -125,6 +128,8 @@ public final class ChronicleRuntime implements AutoCloseable {
             journalReady.complete(journal);
             long lastSync = System.nanoTime();
             long lastStats = lastSync;
+            long lastDropWarning = lastSync - TimeUnit.SECONDS.toNanos(5);
+            long warnedDrops = 0;
             while (accepting || !ingress.isEmpty()) {
                 Pending pending = ingress.poll();
                 if (pending != null) {
@@ -136,6 +141,12 @@ public final class ChronicleRuntime implements AutoCloseable {
                     } catch (Throwable failure) { pending.acknowledgement().completeExceptionally(failure); throw failure; }
                 }
                 long now = System.nanoTime();
+                long drops = metrics.queueFullDrops.get();
+                if (drops > warnedDrops && now - lastDropWarning >= TimeUnit.SECONDS.toNanos(5)) {
+                    // Console I/O belongs to the worker; overloaded server-thread admission only updates counters.
+                    LOG.warn("Chronicle ingress saturated: {} events dropped ({} since previous warning)", drops, drops - warnedDrops);
+                    warnedDrops = drops; lastDropWarning = now;
+                }
                 if (!waiting.isEmpty() && (now - lastSync >= config.syncInterval().toNanos() || waiting.size() >= 1024)) {
                     flush(journal, waiting); lastSync = System.nanoTime();
                 }

@@ -56,11 +56,13 @@ class AdmissionTest {
             assertEquals(Submission.Status.QUEUE_FULL, rejected.status());
             assertTrue(System.nanoTime() - start < TimeUnit.MILLISECONDS.toNanos(100));
             assertEquals(1, runtime.diagnostics().ingressDepth());
+            assertEquals(1, runtime.diagnostics().droppedEvents());
+            assertEquals(1, runtime.diagnostics().queueFullDrops());
             release.countDown();
             first.journaled().toCompletableFuture().get(5, TimeUnit.SECONDS);
             second.journaled().toCompletableFuture().get(5, TimeUnit.SECONDS);
         } finally { release.countDown(); }
-        assertEquals(2, PersistenceTest.scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(2, PersistenceTest.scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
         assertEquals(Submission.Status.STOPPED, runtime.submit(PersistenceTest.event(4)).status());
     }
     @Test void appendFailureFailsAcknowledgementsAndChangesHealth() throws Exception {
@@ -75,7 +77,7 @@ class AdmissionTest {
         assertThrows(ExecutionException.class, () -> submission.journaled().toCompletableFuture().get(5, TimeUnit.SECONDS));
         PersistenceTest.await(() -> runtime.health() == ChronicleHealth.JOURNAL_UNAVAILABLE);
         assertThrows(IllegalStateException.class, runtime::close);
-        assertEquals(0, PersistenceTest.scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(0, PersistenceTest.scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
     }
     @Test void finalDiagnosticsFailureStillClosesJournalAndCannotReportCleanShutdown() throws Exception {
         var config = InfrastructureConfig.defaults(root); var clock = ChronicleClock.system();
@@ -113,7 +115,7 @@ class AdmissionTest {
         }
         assertFalse(acknowledgements.isEmpty());
         for (var acknowledgement : acknowledgements) assertNotNull(acknowledgement.toCompletableFuture().get(1, TimeUnit.SECONDS));
-        assertEquals(acknowledgements.size(), PersistenceTest.scalar(config.database(), "SELECT count(*) FROM audit_events"));
+        assertEquals(acknowledgements.size(), PersistenceTest.scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
         assertEquals(ChronicleHealth.CLOSED, runtime.health());
     }
 }
