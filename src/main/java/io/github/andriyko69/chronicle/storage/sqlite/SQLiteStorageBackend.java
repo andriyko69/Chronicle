@@ -2,6 +2,7 @@
 package io.github.andriyko69.chronicle.storage.sqlite;
 
 import io.github.andriyko69.chronicle.codec.ChronicleEventCodec;
+import io.github.andriyko69.chronicle.codec.BlockDeltaPayloadCodec;
 import io.github.andriyko69.chronicle.codec.EncodedAuditEvent;
 import io.github.andriyko69.chronicle.dlq.DeadLetterRecord;
 import io.github.andriyko69.chronicle.event.*;
@@ -10,6 +11,8 @@ import io.github.andriyko69.chronicle.persistence.StorageFailure;
 import io.github.andriyko69.chronicle.runtime.InfrastructureConfig;
 import io.github.andriyko69.chronicle.storage.*;
 import io.github.andriyko69.chronicle.storage.migration.MigrationManager;
+import io.github.andriyko69.chronicle.query.*;
+import io.github.andriyko69.chronicle.diagnostics.StorageTotals;
 import java.nio.file.Files;
 import java.nio.ByteBuffer;
 import java.time.Instant;
@@ -20,6 +23,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import org.sqlite.SQLiteConfig;
+import org.sqlite.ProgressHandler;
 
 public final class SQLiteStorageBackend implements StorageBackend {
     private final InfrastructureConfig config;
@@ -33,7 +37,7 @@ public final class SQLiteStorageBackend implements StorageBackend {
             Class.forName("org.sqlite.JDBC");
             if (!reader) Files.createDirectories(config.database().toAbsolutePath().getParent());
             var settings = new SQLiteConfig();
-            settings.setBusyTimeout(config.busyTimeoutMillis());
+            settings.setBusyTimeout(reader ? Math.min(2000, config.busyTimeoutMillis()) : config.busyTimeoutMillis());
             settings.enforceForeignKeys(true);
             settings.setTransactionMode(SQLiteConfig.TransactionMode.IMMEDIATE);
             if (reader) settings.setReadOnly(true);
@@ -204,11 +208,67 @@ public final class SQLiteStorageBackend implements StorageBackend {
     }
 
     private static final class Reader implements StorageReader {
+        private static final long QUERY_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
         private final Connection connection;
         private final Thread owner = Thread.currentThread();
-        Reader(Connection connection) { this.connection = connection; }
-        @Override public List<AuditEvent> recent(int limit) throws StorageFailure {
+        private long deadline;
+        private boolean interrupted;
+        Reader(Connection connection) throws StorageFailure {
+            this.connection = connection;
+            try {
+                ProgressHandler.setHandler(connection, 1000, new ProgressHandler() {
+                    @Override protected int progress() {
+                        interrupted = Thread.currentThread().isInterrupted() || System.nanoTime() - deadline >= 0;
+                        return interrupted ? 1 : 0;
+                    }
+                });
+            } catch (SQLException failure) {
+                try { connection.close(); } catch (SQLException close) { failure.addSuppressed(close); }
+                throw SQLiteFailureClassifier.classify(failure);
+            }
+        }
+        private void beginQuery() {
             if (Thread.currentThread() != owner) throw new IllegalStateException("Reader used off its owning thread");
+            deadline = System.nanoTime() + QUERY_NANOS;
+            interrupted = false;
+        }
+        private StorageFailure queryFailure(SQLException failure) {
+            // A deliberately interrupted expensive query does not imply corruption of the database.
+            if (interrupted) return new StorageFailure(StorageFailure.Kind.TRANSIENT, "Lookup timed out or was interrupted; narrow the filters", "QUERY_TIMEOUT", failure);
+            return SQLiteFailureClassifier.classify(failure);
+        }
+        @Override public LookupPage lookup(LookupSpec spec, int page) throws StorageFailure {
+            beginQuery();
+            var query = LookupSql.page(spec, page);
+            var values = new ArrayList<LookupRow>();
+            try (var select = connection.prepareStatement(query.sql())) {
+                for (int i = 0; i < query.parameters().size(); i++) {
+                    Object value = query.parameters().get(i);
+                    if (value instanceof UUID id) select.setBytes(i + 1, uuidBytes(id));
+                    else select.setObject(i + 1, value);
+                }
+                try (var rows = select.executeQuery()) {
+                    while (rows.next()) {
+                        var event = domainEvent(rows);
+                        var delta = new BlockDeltaPayloadCodec().decode(event.payloadVersion(), event.payload());
+                        values.add(new LookupRow(event.id(), event.occurredAt(), event.envelope(), delta.before(), delta.after(), delta.snapshotStatus()));
+                    }
+                }
+                boolean more = values.size() > LookupSpec.PAGE_SIZE;
+                return new LookupPage(page, values.subList(0, Math.min(values.size(), LookupSpec.PAGE_SIZE)), more);
+            } catch (SQLException failure) { throw queryFailure(failure); }
+            catch (RuntimeException failure) { throw fatal("Corrupt stored lookup payload", failure); }
+        }
+        @Override public StorageTotals totals() throws StorageFailure {
+            beginQuery();
+            try (var statement = connection.createStatement(); var rows = statement.executeQuery(
+                    "SELECT (SELECT count(*) FROM audit_events) + (SELECT count(*) FROM legacy_audit_events), (SELECT count(*) FROM dead_letters)")) {
+                if (!rows.next()) throw new SQLException("Missing storage totals");
+                return new StorageTotals(rows.getLong(1), rows.getLong(2));
+            } catch (SQLException failure) { throw queryFailure(failure); }
+        }
+        @Override public List<AuditEvent> recent(int limit) throws StorageFailure {
+            beginQuery();
             if (limit < 1 || limit > 1000) throw new IllegalArgumentException("Query limit must be 1..1000");
             try {
                 var values = new ArrayList<AuditEvent>();
@@ -225,7 +285,7 @@ public final class SQLiteStorageBackend implements StorageBackend {
                 }
                 values.sort(Comparator.comparing(AuditEvent::occurredAt).thenComparing(AuditEvent::id).reversed());
                 return List.copyOf(values.subList(0, Math.min(limit, values.size())));
-            } catch (SQLException failure) { throw SQLiteFailureClassifier.classify(failure); }
+            } catch (SQLException failure) { throw queryFailure(failure); }
             catch (Exception failure) { throw fatal("Corrupt stored canonical event", failure); }
         }
         @Override public void close() throws StorageFailure {

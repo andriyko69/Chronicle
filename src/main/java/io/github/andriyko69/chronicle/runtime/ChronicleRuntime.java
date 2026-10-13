@@ -9,6 +9,7 @@ import io.github.andriyko69.chronicle.ingest.Submission;
 import io.github.andriyko69.chronicle.journal.*;
 import io.github.andriyko69.chronicle.journal.openhft.ChronicleQueueJournal;
 import io.github.andriyko69.chronicle.persistence.*;
+import io.github.andriyko69.chronicle.query.*;
 import io.github.andriyko69.chronicle.storage.*;
 import io.github.andriyko69.chronicle.storage.sqlite.SQLiteStorageBackend;
 import java.time.Duration;
@@ -87,7 +88,19 @@ public final class ChronicleRuntime implements AutoCloseable {
     }
     /** Results are detached. Callers touching Minecraft must dispatch them through server.execute. */
     public CompletionStage<List<AuditEvent>> recent(int limit) {
-        var result = new CompletableFuture<List<AuditEvent>>();
+        return query(reader -> reader.recent(limit));
+    }
+    public CompletionStage<LookupPage> lookup(LookupSpec spec, int page) {
+        LookupSpec.offset(page);
+        return query(reader -> reader.lookup(spec, page));
+    }
+    public CompletionStage<ChronicleStatus> status() {
+        return query(reader -> new ChronicleStatus(diagnostics(), reader.totals()));
+    }
+    @FunctionalInterface
+    private interface ReadOperation<T> { T read(StorageReader reader) throws StorageFailure; }
+    private <T> CompletionStage<T> query(ReadOperation<T> operation) {
+        var result = new CompletableFuture<T>();
         if (!ready.isDone() || ready.isCompletedExceptionally() || closing) {
             result.completeExceptionally(new RejectedExecutionException("Chronicle queries unavailable"));
             return result.minimalCompletionStage();
@@ -95,7 +108,12 @@ public final class ChronicleRuntime implements AutoCloseable {
         queryResults.add(result);
         try {
             queries.execute(() -> {
-                try (var reader = backend.openReader()) { result.complete(reader.recent(limit)); }
+                try {
+                    T value;
+                    try (var reader = backend.openReader()) { value = operation.read(reader); }
+                    // Complete only after close succeeds; a close failure must not follow a success response.
+                    result.complete(value);
+                }
                 catch (StorageFailure failure) {
                     if (failure.kind() == StorageFailure.Kind.FATAL) {
                         fatalStorage = failure; stopAcceptance();

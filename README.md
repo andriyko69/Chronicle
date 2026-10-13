@@ -5,8 +5,9 @@ logging, inspection, querying, and rollback system for modded Minecraft.
 Correctness and forensic reliability take priority over feature velocity.
 
 **Early development:** player block break and placement observations are captured
-on the logical server thread, journaled, and persisted to SQLite. Commands,
-inspection and rollback are not implemented yet.
+on the logical server thread, journaled, and persisted to SQLite. Operator lookup,
+pagination and status commands are available. Inspection and rollback are not
+implemented yet.
 
 Chronicle is intended to run on a dedicated server without requiring players
 to install it on their clients. It currently registers no gameplay content
@@ -58,7 +59,8 @@ python3 scripts/smoke-server.py --accept-eula
 Pass `--accept-eula` only if you accept Minecraft's EULA. The helper binds to
 loopback on an ephemeral port, retains files under `run/smoke/`, and fails on
 startup or shutdown timeouts. It checks Minecraft readiness, Chronicle's
-infrastructure readiness and clean closure, and world saving. It does not run
+infrastructure readiness, status/lookup/page command responses, clean closure,
+and world saving. It does not run
 gameplay tests or connect a client.
 
 Server readiness and clean shutdown are separate checks from compilation.
@@ -114,6 +116,54 @@ Mod block entity save methods can allocate their own tag data before serializati
 Persisted NBT remains opaque and is not assumed safe to restore across versions.
 V002 preserves synthetic V001 rows in `legacy_audit_events` and supports replaying
 pending version-1 journal records. New envelopes use the STRICT `audit_events` table.
+V003 adds time-ordered lookup indexes without changing V001/V002 migrations.
+
+## Lookup and status commands
+
+Operators with permission level 2 or higher can use `/chronicle` or `/ch`:
+
+```text
+/ch lookup t:1h30m r:10 u:Alice b:chest,diamond_ore a:-block
+/ch l r:global t:10m u:#fakeplayer
+/ch page 2
+/ch p 1
+/ch status
+```
+
+Lookup accepts `t:`/`time:` durations in seconds (`s`), minutes (`m`), hours (`h`),
+days (`d`) or weeks (`w`), including compound durations. Without `t:`, the window
+is 24 hours. Player lookups default to radius 5 in the command source's dimension
+and position; radius is an inclusive bounding box, with a maximum of 100 blocks.
+`at:x,y,z` changes its center, and `dim:`/`world:` selects a dimension.
+Bare block and dimension names default to `minecraft:`.
+
+Console spatial lookups require both `at:` and `dim:`. `r:global` removes the
+spatial bounds and requires an explicit time, actor or block filter; it retains
+the player's default dimension unless an explicit dimension replaces it. Console
+global lookups span dimensions unless `dim:` is given. `at:` and `r:global` cannot
+be combined.
+
+`u:`/`user:` accepts comma-separated exact actor names, full UUIDs or `#fakeplayer`.
+`b:`/`block:` accepts comma-separated block IDs. `a:`/`action:` accepts `block`
+(both actions), `-block`/`break`, or `+block`/`place`. Unknown, duplicate and malformed
+filters fail explicitly.
+
+Each page contains at most eight events in descending timestamp/nanosecond/event-ID
+order, with exact actor, world, coordinates, old/new block states and NBT status.
+Block states describe hook observations, not confirmed final mutations. Synthetic
+V001 records are excluded from lookup. Pagination saves the last successful query
+for ten minutes, for up to 128 callers, and supports pages 1–10,000. Each page reads
+current persisted data with the original time cutoff; new or late commits can
+shift page boundaries. Console and other non-player sources share one session.
+
+Queries run on a bounded worker queue with read-only SQLite access, a two-second
+SQL execution deadline and at most two seconds of lock waiting. Overload rejects
+immediately. Narrow the filters if a query times out. Stored payload corruption
+halts admission and reports fatal storage health. Status shows database-wide
+event/DLQ totals (including legacy events), separate runtime counters, ingress,
+journal backlog/allocated bytes, health, schema and flush/commit times. If reads
+are unavailable, runtime diagnostics remain available while database totals are
+reported unavailable.
 
 For an existing disposable, loopback-bound NeoForge installation with the mod
 installed and the EULA already accepted:
@@ -136,7 +186,8 @@ Pure unit/integration tests use temporary SQLite databases and journals:
 The stress task submits 100,000 synthetic events; it is not a production
 benchmark. Live GameTests run from the isolated `src/gameTest` source set and
 exercise player attribution, engine break/place hooks, cancellation, multi-place
-coalescing and NBT capture through journal and SQLite. Accept the EULA in
+coalescing, NBT capture, production command output, pagination and operator
+permissions through journal and SQLite. Accept the EULA in
 `run/gametest/eula.txt` before running them. Test mod classes/resources are excluded
 from ordinary server runs and the shipped JAR; ordinary `src/test` classes are
 not automatically game mods.

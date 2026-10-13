@@ -100,6 +100,8 @@ def main():
         ready = loaded = saved = infrastructure_ready = infrastructure_closed = False
         build_success = args.installed_directory is not None
         stop_sent = False
+        commands_sent = page_sent = False
+        status_health = status_totals = lookup_seen = page_seen = False
         deadline = time.monotonic() + args.startup_timeout
         failure = None
         try:
@@ -117,6 +119,7 @@ def main():
                     "Chronicle infrastructure startup failed", "Chronicle infrastructure configuration/startup failed",
                     "Chronicle journal unavailable", "Chronicle journal replay unavailable",
                     "Chronicle fatal persistence failure", "Chronicle shutdown was not clean",
+                    "Chronicle fatal query/storage failure",
                 )):
                     raise RuntimeError("Chronicle infrastructure reported a fatal lifecycle failure")
                 loaded |= bool(re.search(r"Chronicle\s+\S+\s+\(chronicle\)", line))
@@ -126,18 +129,37 @@ def main():
                 infrastructure_closed |= "Chronicle closed:" in line
                 if not ready and re.search(r'Done \([^)]+\)! For help, type "help"', line):
                     ready = True
-                if ready and infrastructure_ready and not stop_sent:
+                status_health |= "Chronicle status: health=HEALTHY, schema=3" in line
+                status_totals |= "Database totals: persisted events=" in line
+                if "Chronicle lookup — page 1" in line:
+                    if page_sent:
+                        page_seen = True
+                    else:
+                        lookup_seen = True
+                page_seen |= page_sent and "Page 1 has no results." in line
+                if ready and infrastructure_ready and not commands_sent:
+                    commands_sent = True
+                    print("Server ready; checking Chronicle status and lookup commands.", flush=True)
+                    process.stdin.write("chronicle status\nchronicle lookup r:global t:10m u:ChronicleSmokeNoActor\n")
+                    process.stdin.flush()
+                if status_health and status_totals and lookup_seen and not page_sent:
+                    page_sent = True
+                    process.stdin.write("ch p 1\n")
+                    process.stdin.flush()
+                if page_seen and not stop_sent:
                     stop_sent = True
                     print("Server ready; requesting clean shutdown.", flush=True)
                     process.stdin.write("stop\n")
                     process.stdin.flush()
                     deadline = time.monotonic() + args.shutdown_timeout
             exit_code = process.wait(timeout=max(1, deadline - time.monotonic()))
-            if exit_code or not all((ready, loaded, saved, build_success, infrastructure_ready, infrastructure_closed)):
+            if exit_code or not all((ready, loaded, saved, build_success, infrastructure_ready, infrastructure_closed,
+                                     status_health, status_totals, lookup_seen, page_seen)):
                 raise RuntimeError(
                     f"incomplete smoke test: exit={exit_code}, ready={ready}, "
                     f"chronicle_loaded={loaded}, worlds_saved={saved}, build_success={build_success}, "
-                    f"infrastructure_ready={infrastructure_ready}, infrastructure_closed={infrastructure_closed}"
+                    f"infrastructure_ready={infrastructure_ready}, infrastructure_closed={infrastructure_closed}, "
+                    f"status_health={status_health}, status_totals={status_totals}, lookup={lookup_seen}, page={page_seen}"
                 )
         except (RuntimeError, OSError, subprocess.TimeoutExpired, KeyboardInterrupt) as error:
             failure = str(error) or "interrupted"
@@ -175,7 +197,7 @@ def main():
         if failure:
             print(f"Smoke test failed: {failure}. Inspect {log_path}", flush=True)
             return 1
-    print("Smoke test passed: Chronicle loaded, server ready, worlds saved, clean exit.")
+    print("Smoke test passed: Chronicle loaded, status/lookup/page commands responded, worlds saved, clean exit.")
     return 0
 
 

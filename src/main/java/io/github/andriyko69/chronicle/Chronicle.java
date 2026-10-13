@@ -11,6 +11,7 @@ import io.github.andriyko69.chronicle.event.ChronicleClock;
 import io.github.andriyko69.chronicle.runtime.ChronicleRuntime;
 import io.github.andriyko69.chronicle.runtime.InfrastructureConfig;
 import io.github.andriyko69.chronicle.listener.PlayerBlockListener;
+import io.github.andriyko69.chronicle.command.ChronicleCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,9 +22,12 @@ public final class Chronicle {
     private static final Logger LOG = LoggerFactory.getLogger(Chronicle.class);
     private final String version;
     private ChronicleRuntime runtime;
+    private final ChronicleCommands commands;
 
     public Chronicle(ModContainer container) {
         version = container.getModInfo().getVersion().toString();
+        commands = new ChronicleCommands(() -> runtime, ChronicleClock.system());
+        NeoForge.EVENT_BUS.addListener(commands::onRegister);
         NeoForge.EVENT_BUS.addListener(this::starting);
         NeoForge.EVENT_BUS.addListener(this::stopping);
         new PlayerBlockListener(() -> runtime, ChronicleClock.system()).register();
@@ -40,6 +44,7 @@ public final class Chronicle {
         }
     }
     private void stopping(ServerStoppingEvent event) {
+        commands.clearSessions();
         if (runtime != null) {
             try { runtime.close(); }
             catch (Exception failure) { LOG.error("Chronicle shutdown was not clean", failure); }
