@@ -1,0 +1,26 @@
+OpenHFT attribution from the exact resolved Maven POM headers.
+The bundled jars are unmodified. Upstream license files are preserved alongside this notice.
+
+net.openhft:chronicle-queue:2026.7
+Copyright 2016-2025 chronicle.software; SPDX-License-Identifier: Apache-2.0
+
+net.openhft:chronicle-core:2026.6
+Copyright 2016-2025 chronicle.software; SPDX-License-Identifier: Apache-2.0
+
+net.openhft:chronicle-bytes:2026.4
+Copyright 2013-2025 chronicle.software; SPDX-License-Identifier: Apache-2.0
+
+net.openhft:chronicle-wire:2026.10
+Copyright 2013-2025 chronicle.software; SPDX-License-Identifier: Apache-2.0
+
+net.openhft:chronicle-threads:2026.4
+Copyright 2013-2025 chronicle.software; SPDX-License-Identifier: Apache-2.0
+
+net.openhft:compiler:2026.2
+Copyright 2013-2025 chronicle.software; SPDX-License-Identifier: Apache-2.0
+
+net.openhft:posix:2026.2
+Copyright 2013-2025 chronicle.software; SPDX-License-Identifier: Apache-2.0
+
+net.openhft:affinity:2026.2
+Copyright 2013-2025 chronicle.software; SPDX-License-Identifier: Apache-2.0

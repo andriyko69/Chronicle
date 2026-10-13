@@ -1,0 +1,12 @@
+# Java 25: explicit grants relayed to NeoForge's later OpenHFT module layer.
+--add-opens=java.base/java.lang=ALL-UNNAMED
+--add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+--add-opens=java.base/java.io=ALL-UNNAMED
+--add-opens=java.base/java.nio=ALL-UNNAMED
+--add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+--add-opens=java.base/java.nio.channels.spi=ALL-UNNAMED
+--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED
+--enable-native-access=ALL-UNNAMED
+-Dbackground.releaser=false
+-Dchronicle.disk.monitor.disable=true
+-Dchronicle.analytics.disable=true

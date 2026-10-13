@@ -50,3 +50,5 @@ references/
 /.agent/handoffs/
 /.agent/scratch/
 /.agent/reports/
+
+*.pyc

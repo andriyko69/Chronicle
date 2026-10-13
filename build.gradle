@@ -22,7 +22,6 @@ base {
     archivesName = mod_id
 }
 
-// Chronicle deliberately requires Java 25, including its dedicated server runtime.
 java.toolchain.languageVersion = JavaLanguageVersion.of(25)
 
 // ModDevGradle otherwise selects separate Java versions for NeoForm and its tools.
@@ -78,9 +77,86 @@ tasks.named('runServer', JavaExec).configure {
     doFirst { task -> task.standardInput = System.in }
 }
 
-// Optional development mods belong in localRuntime rather than published dependencies.
 configurations {
     runtimeClasspath.extendsFrom localRuntime
+    jffiNative {
+        canBeResolved = true
+        canBeConsumed = false
+        transitive = false
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    jarJar(implementation('net.openhft:chronicle-queue:2026.7') {
+        // Minecraft 1.21.1 strictly pins SLF4J to 2.0.9.
+        exclude group: 'org.slf4j', module: 'slf4j-api'
+        exclude group: 'net.openhft', module: 'chronicle-analytics'
+    }) { version { strictly '[2026.7]'; prefer '2026.7' } }
+    jarJar(implementation('org.xerial:sqlite-jdbc:3.53.4.0') {
+        exclude group: 'org.slf4j', module: 'slf4j-api'
+    }) { version { strictly '[3.53.4.0]'; prefer '3.53.4.0' } }
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.14.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // Pure tests do not launch Minecraft, which supplies SLF4J in the server.
+    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.9'
+
+    // JarJar embeds direct declarations only. Minecraft supplies ASM, JNA and SLF4J.
+    [
+        'net.openhft:chronicle-core:2026.6', 'net.openhft:chronicle-bytes:2026.4',
+        'net.openhft:chronicle-wire:2026.10', 'net.openhft:chronicle-threads:2026.4',
+        'net.openhft:compiler:2026.2', 'net.openhft:posix:2026.2', 'net.openhft:affinity:2026.2',
+        'com.github.jnr:jnr-ffi:2.2.15', 'com.github.jnr:jffi:1.3.12',
+        'com.github.jnr:jnr-a64asm:1.0.0',
+        'com.github.jnr:jnr-x86asm:1.0.2', 'com.github.jnr:jnr-constants:0.10.4',
+        'commons-cli:commons-cli:1.5.0'
+    ].each { coordinate ->
+        def pinned = coordinate.split(':')[2]
+        jarJar(coordinate) { version { strictly "[${pinned}]"; prefer pinned } }
+    }
+    // Classifier Maven identities collide in JarJar. Local-file packaging uses the
+    // native JAR's existing distinct Automatic-Module-Name, preserving its bytes/notices.
+    jffiNative 'com.github.jnr:jffi:1.3.12:native'
+    jarJar files(configurations.jffiNative)
+}
+
+def chronicleJvmArgs = file('chronicle-jvm.args').readLines()
+        .findAll { !it.isBlank() && !it.startsWith('#') }
+neoForge.runs.configureEach {
+    chronicleJvmArgs.each { jvmArgument it }
+}
+neoForge.runs.server.additionalRuntimeClasspathConfiguration.extendsFrom(configurations.implementation)
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    jvmArgs chronicleJvmArgs
+    maxHeapSize = '512m'
+    testLogging { events 'failed', 'skipped'; showStandardStreams = true }
+    systemProperty 'chronicle.testClasspath', sourceSets.test.runtimeClasspath.asPath
+}
+tasks.named('test', Test).configure { useJUnitPlatform { excludeTags 'stress' } }
+tasks.register('stressTest', Test) {
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'stress' }
+    outputs.upToDateWhen { false }
+}
+
+sourceSets {
+    spike {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.runtimeClasspath
+    }
+}
+
+tasks.register('journalSpike', JavaExec) {
+    classpath = sourceSets.spike.runtimeClasspath
+    mainClass = 'io.github.andriyko69.chronicle.spike.JournalSpike'
+    args 'suite'
+    systemProperty 'chronicle.analytics.disable', 'true'
+    jvmArgs chronicleJvmArgs
 }
 
 var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
@@ -110,6 +186,7 @@ tasks.named('jar', Jar).configure {
     from(['LICENSE', 'TEMPLATE_LICENSE.txt']) {
         into 'META-INF'
     }
+    from('licenses/third-party') { into 'META-INF/licenses/third-party' }
 }
 
 idea {

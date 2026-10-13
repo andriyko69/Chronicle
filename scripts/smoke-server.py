@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Check development-server startup and clean shutdown in a fresh world (POSIX)."""
+"""Check NeoForge and Chronicle readiness, world saving, and clean shutdown (POSIX)."""
 
 import argparse
 import json
@@ -30,41 +30,58 @@ def main():
     )
     parser.add_argument("--startup-timeout", type=positive_seconds, default=600)
     parser.add_argument("--shutdown-timeout", type=positive_seconds, default=60)
+    parser.add_argument("--installed-directory", type=Path,
+                        help="test an existing disposable NeoForge installation with the built mod and accepted EULA")
     args = parser.parse_args()
-    if not args.accept_eula:
+    if not args.accept_eula and args.installed_directory is None:
         parser.error("read the Minecraft EULA and pass --accept-eula if you accept it")
     if os.name != "posix":
         parser.error("this helper requires POSIX; use gradlew.bat runServer on Windows")
 
     root = Path(__file__).resolve().parents[1]
-    parent = root / "run" / "smoke"
-    parent.mkdir(parents=True, exist_ok=True)
-    directory = Path(tempfile.mkdtemp(prefix="server-", dir=parent))
-    (directory / "eula.txt").write_text("eula=true\n", encoding="utf-8")
-    settings = json.dumps({
-        "layers": [
-            {"block": "minecraft:bedrock", "height": 1},
-            {"block": "minecraft:dirt", "height": 2},
-            {"block": "minecraft:grass_block", "height": 1},
-        ],
-        "biome": "minecraft:plains",
-    })
-    (directory / "server.properties").write_text(
-        "server-ip=127.0.0.1\nserver-port=0\nonline-mode=true\n"
-        "level-type=minecraft:flat\n" + f"generator-settings={settings}\n"
-        "generate-structures=false\nview-distance=2\nsimulation-distance=2\n"
-        "max-players=1\nmotd=Chronicle smoke test\n", encoding="utf-8",
-    )
+    if args.installed_directory is not None:
+        directory = args.installed_directory.resolve()
+        if not (directory / "eula.txt").is_file() or not re.search(
+            r"(?m)^eula=true\s*$", (directory / "eula.txt").read_text(encoding="utf-8")
+        ):
+            parser.error("installed directory must already have eula=true")
+        if not re.search(r"(?m)^server-ip=127\.0\.0\.1\s*$",
+                         (directory / "server.properties").read_text(encoding="utf-8")):
+            parser.error("installed smoke server must bind to 127.0.0.1")
+        version = re.search(r"(?m)^neo_version=(.+)$", (root / "gradle.properties").read_text()).group(1)
+        launch_args = directory / "libraries/net/neoforged/neoforge" / version / "unix_args.txt"
+        if not launch_args.is_file():
+            parser.error(f"missing installed NeoForge arguments: {launch_args}")
+        command = ["java", f"@{root / 'chronicle-jvm.args'}", "@user_jvm_args.txt", f"@{launch_args}", "--nogui"]
+        working_directory = directory
+    else:
+        parent = root / "run" / "smoke"
+        parent.mkdir(parents=True, exist_ok=True)
+        directory = Path(tempfile.mkdtemp(prefix="server-", dir=parent))
+        (directory / "eula.txt").write_text("eula=true\n", encoding="utf-8")
+        settings = json.dumps({
+            "layers": [
+                {"block": "minecraft:bedrock", "height": 1},
+                {"block": "minecraft:dirt", "height": 2},
+                {"block": "minecraft:grass_block", "height": 1},
+            ],
+            "biome": "minecraft:plains",
+        })
+        (directory / "server.properties").write_text(
+            "server-ip=127.0.0.1\nserver-port=0\nonline-mode=true\n"
+            "level-type=minecraft:flat\n" + f"generator-settings={settings}\n"
+            "generate-structures=false\nview-distance=2\nsimulation-distance=2\n"
+            "max-players=1\nmotd=Chronicle smoke test\n", encoding="utf-8",
+        )
+        command = [str(root / "gradlew"), "--no-daemon", "--console=plain", "runServer",
+                   f"-Pchronicle.runDirectory={directory}"]
+        working_directory = root
     log_path = directory / "console.log"
     print(f"Smoke-test files and logs: {directory}", flush=True)
-    command = [
-        str(root / "gradlew"), "--no-daemon", "--console=plain", "runServer",
-        f"-Pchronicle.runDirectory={directory}",
-    ]
     lines = queue.Queue()
     with log_path.open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
-            command, cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            command, cwd=working_directory, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
             bufsize=1, start_new_session=True,
         )
@@ -80,7 +97,9 @@ def main():
 
         reader = threading.Thread(target=read_output, daemon=True)
         reader.start()
-        ready = loaded = saved = build_success = False
+        ready = loaded = saved = infrastructure_ready = infrastructure_closed = False
+        build_success = args.installed_directory is not None
+        stop_sent = False
         deadline = time.monotonic() + args.startup_timeout
         failure = None
         try:
@@ -94,20 +113,31 @@ def main():
                     continue
                 if line is None:
                     break
+                if any(message in line for message in (
+                    "Chronicle infrastructure startup failed", "Chronicle infrastructure configuration/startup failed",
+                    "Chronicle journal unavailable", "Chronicle journal replay unavailable",
+                    "Chronicle fatal persistence failure", "Chronicle shutdown was not clean",
+                )):
+                    raise RuntimeError("Chronicle infrastructure reported a fatal lifecycle failure")
                 loaded |= bool(re.search(r"Chronicle\s+\S+\s+\(chronicle\)", line))
                 saved |= "All dimensions are saved" in line
                 build_success |= "BUILD SUCCESSFUL" in line
+                infrastructure_ready |= "Chronicle ready: schema=" in line
+                infrastructure_closed |= "Chronicle closed:" in line
                 if not ready and re.search(r'Done \([^)]+\)! For help, type "help"', line):
                     ready = True
+                if ready and infrastructure_ready and not stop_sent:
+                    stop_sent = True
                     print("Server ready; requesting clean shutdown.", flush=True)
                     process.stdin.write("stop\n")
                     process.stdin.flush()
                     deadline = time.monotonic() + args.shutdown_timeout
             exit_code = process.wait(timeout=max(1, deadline - time.monotonic()))
-            if exit_code or not all((ready, loaded, saved, build_success)):
+            if exit_code or not all((ready, loaded, saved, build_success, infrastructure_ready, infrastructure_closed)):
                 raise RuntimeError(
                     f"incomplete smoke test: exit={exit_code}, ready={ready}, "
-                    f"chronicle_loaded={loaded}, worlds_saved={saved}, build_success={build_success}"
+                    f"chronicle_loaded={loaded}, worlds_saved={saved}, build_success={build_success}, "
+                    f"infrastructure_ready={infrastructure_ready}, infrastructure_closed={infrastructure_closed}"
                 )
         except (RuntimeError, OSError, subprocess.TimeoutExpired, KeyboardInterrupt) as error:
             failure = str(error) or "interrupted"
