@@ -16,9 +16,9 @@ Typical triggers:
 Small localized fixes, documentation edits, and routine configuration
 changes do not need a formal plan.
 
-Store substantive plans at `.agent/plans/<short-name>.md` and commit them
-with the work they explain. Link the relevant issue when one exists.
-Temporary investigation notes and raw logs may remain outside Git.
+Store substantive plans at `.agent/plans/<short-name>.md` as ignored working
+files. Link the relevant issue when one exists. Keep temporary investigation
+notes and raw logs in the corresponding ignored `.agent/` subdirectories.
 
 Use this outline, omitting sections that do not apply:
 

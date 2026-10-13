@@ -40,5 +40,13 @@ repo/
 !**/src/**/repo/
 
 references/
-.agent/plans/
+
 *.log
+*.log.gz
+
+# Agent-generated working artifacts
+/.agent/plans/
+/.agent/research/
+/.agent/handoffs/
+/.agent/scratch/
+/.agent/reports/

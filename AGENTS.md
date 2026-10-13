@@ -37,3 +37,23 @@ are `io.github.andriyko69.chronicle`.
 8. Follow `.agent/PLANS.md` for complex or risky changes. Keep local fixes
    lightweight. Add project skills only for demonstrated recurring
    workflows; reuse existing global skills.
+
+## Code clarity and comments
+
+Prefer self-explanatory code. Do not add comments that narrate obvious code;
+improve names, types, method boundaries, and structure instead.
+
+Comments should primarily explain why: non-obvious invariants, concurrency,
+durability, compatibility, surprising behavior, or external constraints.
+Do not add boilerplate Javadocs to every class or method; document meaningful
+API contracts. Remove stale or redundant comments when editing nearby code.
+
+## Agent working files
+
+Do not put plans, research, scratch files, handoffs, or reports in the repository
+root. Use the ignored `.agent/plans/`, `.agent/research/`, `.agent/handoffs/`,
+`.agent/scratch/`, and `.agent/reports/` directories.
+
+Keep `AGENTS.md`, `.agent/PLANS.md`, and intentional reusable `.agents/skills/**`
+as persistent, tracked infrastructure. Do not turn one-off task notes into
+permanent project documentation.
