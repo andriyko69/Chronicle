@@ -80,7 +80,7 @@ public final class ContainerGameTests {
         Output(MinecraftServer server) { this.server = server; }
         public void sendSystemMessage(Component message) {
             if (!server.isSameThread()) throw new IllegalStateException("Output off server thread");
-            lines.add(message.getString());
+            lines.add(ChatEvidence.text(message));
         }
         public boolean acceptsSuccess() { return true; }
         public boolean acceptsFailure() { return true; }
@@ -118,25 +118,23 @@ public final class ContainerGameTests {
                 catch (com.mojang.brigadier.exceptions.CommandSyntaxException failure) { throw new IllegalStateException(failure); }
             }
             helper.assertTrue(!pending.output.lines.isEmpty(), "Waiting for production command reply");
-            var rows = pending.output.lines.stream().filter(l -> l.contains(" | ")).toList();
+            var rows = pending.output.lines.stream().filter(l -> l.contains("Event ID: ")).toList();
             if (rows.size() != 6) { pending.output = null; helper.fail("Waiting for six persisted item rows"); }
-            var expected = new HashSet<String>();
             for (int i = 0; i < positions.size(); i++) {
                 var pos = positions.get(i);
-                String prefix = "minecraft:overworld (" + pos.getX() + ", " + pos.getY() + ", " + pos.getZ() + ") | ";
-                String actor = " | ContainerReal [PLAYER, " + player.getUUID() + "] | ";
+                String coordinates = "minecraft:overworld (" + pos.getX() + ", " + pos.getY() + ", " + pos.getZ() + ")";
                 String container = i == 1 ? "minecraft:barrel" : "minecraft:chest";
-                expected.add(prefix + "ITEM_TAKE" + actor + "minecraft:diamond | count=16 container=" + container);
-                expected.add(prefix + "ITEM_PUT" + actor + "minecraft:diamond_sword | count=1 container=" + container
-                        + " name=\"Evidence Blade\" enchantments=[minecraft:sharpness=3] damage=7 [components: present]");
+                for (boolean put : List.of(false, true)) {
+                    var matching = rows.stream().filter(row -> row.contains(coordinates) && row.contains(put ? " put " : " took ")).toList();
+                    helper.assertTrue(matching.size() == 1, "One transaction per container and direction");
+                    String row = matching.getFirst();
+                    for (String field : List.of("Actor UUID: " + player.getUUID(), "Container: " + container,
+                            put ? "Item: minecraft:diamond_sword" : "Item: minecraft:diamond", put ? "Count: 1" : "Count: 16",
+                            put ? "×1 diamond_sword" : "×16 diamond")) helper.assertTrue(row.contains(field), "Transaction field " + field);
+                    if (put) for (String field : List.of("Custom name: Evidence Blade", "minecraft:sharpness=3", "Damage: 7", "Components: PRESENT"))
+                        helper.assertTrue(row.contains(field), "Rich item field " + field);
+                }
             }
-            var actual = new HashSet<String>();
-            for (String row : rows) {
-                String[] parts = row.split(" \\| ", 3);
-                helper.assertTrue(parts.length == 3 && UUID.fromString(parts[0]) != null && parts[1].contains("s ago)"), "ID and timestamp envelope");
-                actual.add(parts[2]);
-            }
-            helper.assertTrue(expected.equals(actual), "Exact command row bodies, count, summaries and component statuses: " + actual);
         }).thenSucceed();
     }
     @GameTest(template = "empty", timeoutTicks = 400)

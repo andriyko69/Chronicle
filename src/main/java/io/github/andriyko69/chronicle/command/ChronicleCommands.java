@@ -63,7 +63,7 @@ public final class ChronicleCommands {
             if (active == null) return unavailable(source);
             return deliver(source, active, active.lookup(spec, 1), result -> {
                 sessions.put(key, spec);
-                ChronicleFormatter.page(result, clock).forEach(line -> send(source, line));
+                ChronicleFormatter.page(result, clock, source.getPlayer() == null ? null : source.getLevel().dimension().location().toString()).forEach(line -> send(source, line));
             }, false);
         } catch (IllegalArgumentException failure) { source.sendFailure(Component.literal(failure.getMessage())); return 0; }
     }
@@ -75,7 +75,7 @@ public final class ChronicleCommands {
         if (active == null) return unavailable(source);
         return deliver(source, active, active.lookup(spec.get(), number), result -> {
             if (result.rows().isEmpty()) source.sendFailure(Component.literal("Page " + number + " has no results."));
-            else ChronicleFormatter.page(result, clock).forEach(line -> send(source, line));
+            else ChronicleFormatter.page(result, clock, source.getPlayer() == null ? null : source.getLevel().dimension().location().toString()).forEach(line -> send(source, line));
         }, false);
     }
     private int status(CommandSourceStack source) {
@@ -97,7 +97,7 @@ public final class ChronicleCommands {
             else {
                 if (status) {
                     ChronicleFormatter.runtimeStatus(active.diagnostics()).forEach(line -> send(source, line));
-                    send(source, "Database totals unavailable.");
+                    send(source, Component.literal("Database totals unavailable."));
                 }
                 source.sendFailure(Component.literal(error(failure)));
             }
@@ -112,7 +112,7 @@ public final class ChronicleCommands {
             return "Chronicle query unavailable: " + storage.getMessage();
         return "Chronicle query failed; inspect /ch status and the server log. Database totals unavailable.";
     }
-    private static void send(CommandSourceStack source, String text) { source.sendSuccess(() -> Component.literal(text), false); }
+    private static void send(CommandSourceStack source, Component text) { source.sendSuccess(() -> text, false); }
     private static int unavailable(CommandSourceStack source) {
         source.sendFailure(Component.literal("Chronicle runtime unavailable.")); return 0;
     }

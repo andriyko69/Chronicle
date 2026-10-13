@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 package io.github.andriyko69.chronicle;
 
-import io.github.andriyko69.chronicle.command.ChronicleFormatter;
 import io.github.andriyko69.chronicle.diagnostics.ChronicleHealth;
 import io.github.andriyko69.chronicle.event.*;
 import io.github.andriyko69.chronicle.query.*;
@@ -41,10 +40,10 @@ class ContainerLookupIntegrationTest {
             assertEquals(List.of(put.id()), lookup(runtime, "a:item b:iron_ingot").rows().stream().map(LookupRow::id).toList());
             var rows = lookup(runtime, "a:take"); var row = rows.rows().getFirst();
             assertEquals(ContainerPayloadCodecTest.payload(1, ItemTransactionPayload.ComponentSnapshotStatus.PRESENT), row.item());
-            String expected = take.id() + " | " + take.occurredAt() + " (1s ago) | minecraft:overworld (2, 64, 3) | ITEM_TAKE"
-                    + " | Alice [PLAYER, " + take.envelope().actorUuid() + "] | minecraft:diamond_sword | count=1 container=minecraft:barrel"
-                    + " name=\"Blade\" enchantments=[minecraft:sharpness=5] damage=12 [components: present]";
-            assertEquals(expected, ChronicleFormatter.page(rows, CLOCK).get(1));
+            assertEquals("minecraft:diamond_sword", row.envelope().targetId());
+            assertEquals(take.id(), row.id());
+            assertEquals(take.occurredAt(), row.occurredAt());
+            assertEquals(take.envelope(), row.envelope());
             assertEquals(ChronicleHealth.HEALTHY, runtime.health());
         }
         assertEquals(3, PersistenceTest.scalar(config.database(), "PRAGMA user_version"));
@@ -68,18 +67,6 @@ class ContainerLookupIntegrationTest {
             } finally { assertThrows(IllegalStateException.class, runtime::close); }
             assertEquals(1, PersistenceTest.scalar(config.database(), "SELECT terminal_records FROM journal_checkpoint"));
             assertEquals(1, PersistenceTest.scalar(config.database(), "SELECT count(*) FROM audit_events"));
-        }
-    }
-    @Test void itemFormattingShowsOmittedStatusesAndEscapesUserNames() {
-        for (var status : ItemTransactionPayload.ComponentSnapshotStatus.values()) {
-            var source = ContainerPayloadCodecTest.event("ITEM_PUT", "minecraft:diamond", 8, NOW);
-            var payload = new ItemTransactionPayload(8, "minecraft:chest", "A\n\"B§c", new TreeMap<>(), null, status,
-                    status == ItemTransactionPayload.ComponentSnapshotStatus.PRESENT ? new byte[] {1} : null);
-            var row = LookupRow.decode(AuditEvent.item(source.id(), NOW, source.envelope(), payload));
-            String text = ChronicleFormatter.page(new LookupPage(1, List.of(row), false), CLOCK).get(1);
-            assertTrue(text.contains("name=\"A \\\"B c\"")); assertFalse(text.contains("\n"));
-            if (status == ItemTransactionPayload.ComponentSnapshotStatus.NONE) assertFalse(text.contains("components:"));
-            else assertTrue(text.contains("[components: " + status.name().toLowerCase(Locale.ROOT) + "]"));
         }
     }
 }

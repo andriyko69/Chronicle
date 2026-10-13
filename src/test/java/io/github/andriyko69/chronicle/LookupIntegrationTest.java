@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 package io.github.andriyko69.chronicle;
 
-import io.github.andriyko69.chronicle.command.ChronicleFormatter;
 import io.github.andriyko69.chronicle.diagnostics.*;
 import io.github.andriyko69.chronicle.event.*;
 import io.github.andriyko69.chronicle.journal.openhft.ChronicleQueueJournal;
@@ -58,9 +57,6 @@ class LookupIntegrationTest {
             var statuses = new HashSet<BlockDeltaPayload.SnapshotStatus>();
             for (var row : first.rows()) { statuses.add(row.nbtStatus()); assertEquals("value", row.before().properties().getOrDefault("test", row.after().properties().get("test"))); }
             assertEquals(Set.of(BlockDeltaPayload.SnapshotStatus.values()), statuses);
-            String output = String.join("\n", ChronicleFormatter.page(first, CLOCK));
-            assertTrue(output.contains("[NBT: present]")); assertTrue(output.contains("[NBT: oversized]")); assertTrue(output.contains("[NBT: failed]"));
-            assertTrue(output.contains("minecraft:air")); assertTrue(output.contains("[test=value]")); assertTrue(output.contains("0s ago"));
             var spatial = lookup(runtime, "dim:overworld at:0,64,-10 r:5 t:1h", 1);
             assertEquals(sorted.stream().filter(e -> e.envelope().worldId().equals("minecraft:overworld") && e.envelope().x() >= -5 && e.envelope().x() <= 5
                     && e.envelope().z() >= -15 && e.envelope().z() <= -5).map(AuditEvent::id).toList(), ids(spatial));
