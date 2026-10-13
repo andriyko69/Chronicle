@@ -4,10 +4,10 @@ Chronicle is a server-side NeoForge 1.21.1 mod being developed into a forensic
 logging, inspection, querying, and rollback system for modded Minecraft.
 Correctness and forensic reliability take priority over feature velocity.
 
-**Early development:** player block break and placement observations are captured
-on the logical server thread, journaled, and persisted to SQLite. Operator lookup,
-pagination and status commands are available. Inspection and rollback are not
-implemented yet.
+**Early development:** player block break, placement and world-container net item
+transactions are captured on the logical server thread, journaled, and persisted
+to SQLite. Operator lookup, pagination and status commands are available.
+Inspection and rollback are not implemented yet.
 
 Chronicle is intended to run on a dedicated server without requiring players
 to install it on their clients. It currently registers no gameplay content
@@ -118,6 +118,35 @@ V002 preserves synthetic V001 rows in `legacy_audit_events` and supports replayi
 pending version-1 journal records. New envelopes use the STRICT `audit_events` table.
 V003 adds time-ordered lookup indexes without changing V001/V002 migrations.
 
+## Container transactions
+
+World storage menus are snapshotted at open and compared at close, logout, death,
+dimension change, replacement menu or server stop. Identical items are grouped
+across slots; rearranging stacks or taking and returning items emits no event.
+Only persistent BlockEntity-backed slots count, including both double chest
+halves and crafter inputs. Double chest coordinates use the lexicographically
+smallest `(x, y, z)` half, independent of which half was opened. Virtual menus,
+player/ender inventories and transient result previews are excluded. Chiseled
+bookshelves are covered only when exposed through a world-backed menu; vanilla
+direct bookshelf interaction does not open one.
+
+Component patches use registry-aware Minecraft 1.21.1 codecs on the server thread.
+Plain items store no component snapshot. Modified items retain at most 16 KiB of
+canonical NBT plus a bounded readable summary; oversized or failed snapshots are
+explicitly marked. Custom name summaries are limited to 1024 UTF-8 bytes with an
+ellipsis on truncation. Complete serializable patches are hashed even when their
+bytes exceed the retention limit, preserving net comparisons. Unknown component
+identities (failed serialization or transient components) fail the container
+comparison explicitly and log the failure without fabricating transactions.
+NBT string overflow uses a stable extended fingerprint for comparison while
+marking the retained snapshot oversized. Query and persistence workers never decode NBT.
+These opaque snapshots are not a promise of cross-version restoration.
+
+The net difference observes changes over the entire open interval. Automation,
+furnace processing and simultaneous viewers can contribute to that difference;
+these records identify the session player and do not prove exclusive causality.
+No world or player state is mutated by auditing.
+
 ## Lookup and status commands
 
 Operators with permission level 2 or higher can use `/chronicle` or `/ch`:
@@ -125,6 +154,8 @@ Operators with permission level 2 or higher can use `/chronicle` or `/ch`:
 ```text
 /ch lookup t:1h30m r:10 u:Alice b:chest,diamond_ore a:-block
 /ch l r:global t:10m u:#fakeplayer
+/ch l t:1h a:take b:diamond
+/ch l t:1h a:container
 /ch page 2
 /ch p 1
 /ch status
@@ -135,7 +166,7 @@ days (`d`) or weeks (`w`), including compound durations. Without `t:`, the windo
 is 24 hours. Player lookups default to radius 5 in the command source's dimension
 and position; radius is an inclusive bounding box, with a maximum of 100 blocks.
 `at:x,y,z` changes its center, and `dim:`/`world:` selects a dimension.
-Bare block and dimension names default to `minecraft:`.
+Bare block, item and dimension names default to `minecraft:`.
 
 Console spatial lookups require both `at:` and `dim:`. `r:global` removes the
 spatial bounds and requires an explicit time, actor or block filter; it retains
@@ -144,12 +175,16 @@ global lookups span dimensions unless `dim:` is given. `at:` and `r:global` cann
 be combined.
 
 `u:`/`user:` accepts comma-separated exact actor names, full UUIDs or `#fakeplayer`.
-`b:`/`block:` accepts comma-separated block IDs. `a:`/`action:` accepts `block`
-(both actions), `-block`/`break`, or `+block`/`place`. Unknown, duplicate and malformed
-filters fail explicitly.
+`b:`/`block:` accepts comma-separated block or item IDs (the event target).
+`a:`/`action:` accepts `block` (both block actions), `-block`/`break`,
+`+block`/`place`, `container`/`item` (both item actions), `-container`/`-item`/`take`,
+or `+container`/`+item`/`put`. With no action filter, both block and item events
+are returned. Unknown, duplicate and malformed filters fail explicitly.
 
 Each page contains at most eight events in descending timestamp/nanosecond/event-ID
-order, with exact actor, world, coordinates, old/new block states and NBT status.
+order, with exact actor, world and coordinates. Block rows show old/new block
+states and NBT status. Item rows show ITEM_TAKE/ITEM_PUT, item ID, net count,
+container block ID, custom name/enchantments/damage and component snapshot status.
 Block states describe hook observations, not confirmed final mutations. Synthetic
 V001 records are excluded from lookup. Pagination saves the last successful query
 for ten minutes, for up to 128 callers, and supports pages 1–10,000. Each page reads

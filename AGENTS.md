@@ -57,3 +57,13 @@ root. Use the ignored `.agent/plans/`, `.agent/research/`, `.agent/handoffs/`,
 Keep `AGENTS.md`, `.agent/PLANS.md`, and intentional reusable `.agents/skills/**`
 as persistent, tracked infrastructure. Do not turn one-off task notes into
 permanent project documentation.
+
+## Token & Execution Efficiency Rules
+
+1. **Pre-Grilled Prompts:** When a milestone prompt states that architecture and edge cases are pre-grilled, skip interactive/open-ended grilling unless you encounter a concrete blocker in the mapped NeoForge sources. Write a concise checklist to `.agent/plans/` and proceed directly to implementation.
+2. **Iterative Testing (Fast Path):** During active implementation, NEVER run `clean`, `stressTest`, `runGameTestServer`, or `smoke-server.py`. Run targeted unit tests only:
+   - `./scripts/fast-test.sh "*TestName*"`
+   - Or wrap Gradle commands in `python3 scripts/gradle-quiet.py ./gradlew <task> --console=plain` to avoid flooding context with build output.
+3. **Final Verification (Full Path):** Run the heavy verification suite (`clean build stressTest runGameTestServer` and `scripts/smoke-server.py`) ONLY once implementation and unit tests are complete.
+4. **Scoped Code Review:** When running `code-review`, inspect only the diff and newly added files against the milestone baseline commit (`git status --short` / `git diff <baseline>`), not the entire repository.
+5. **Scratch Hygiene:** Do not read old `.agent/scratch/` logs from previous milestones.

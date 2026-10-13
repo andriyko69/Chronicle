@@ -33,7 +33,7 @@ public record LookupSpec(Instant since, String dimension, Bounds bounds,
         Objects.requireNonNull(since);
         actors = List.copyOf(actors); targets = List.copyOf(targets); actions = List.copyOf(actions);
         if (bounds != null && dimension == null) throw new IllegalArgumentException("Spatial lookup needs dimension");
-        if (actors.size() > 16 || targets.size() > 16 || actions.size() > 2) throw new IllegalArgumentException("Too many filters");
+        if (actors.size() > 16 || targets.size() > 16 || actions.size() > 4) throw new IllegalArgumentException("Too many filters");
     }
     public static int offset(int page) {
         if (page < 1 || page > MAX_PAGE) throw new IllegalArgumentException("Page must be 1.." + MAX_PAGE);

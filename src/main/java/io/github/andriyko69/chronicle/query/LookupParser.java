@@ -32,7 +32,7 @@ public final class LookupParser {
         boolean global = false;
         List<LookupSpec.Actor> actors = List.of();
         List<String> targets = List.of();
-        List<String> actions = List.of("BLOCK_BREAK", "BLOCK_PLACE");
+        List<String> actions = List.of("BLOCK_BREAK", "BLOCK_PLACE", "ITEM_TAKE", "ITEM_PUT");
         for (String token : tokens) {
             int split = token.indexOf(':');
             if (split < 1 || split == token.length() - 1) throw syntax("Expected filter:value, got '" + token + "'");
@@ -63,7 +63,10 @@ public final class LookupParser {
                     case "block" -> List.of("BLOCK_BREAK", "BLOCK_PLACE");
                     case "-block", "break" -> List.of("BLOCK_BREAK");
                     case "+block", "place" -> List.of("BLOCK_PLACE");
-                    default -> throw syntax("Action must be block, -block/break or +block/place");
+                    case "container", "item" -> List.of("ITEM_TAKE", "ITEM_PUT");
+                    case "-item", "take", "-container" -> List.of("ITEM_TAKE");
+                    case "+item", "put", "+container" -> List.of("ITEM_PUT");
+                    default -> throw syntax("Action must be block/break/place or container/item/take/put (also +/-block, +/-item, +/-container)");
                 };
                 case "dimension" -> dimension = resource(value);
                 case "at" -> {

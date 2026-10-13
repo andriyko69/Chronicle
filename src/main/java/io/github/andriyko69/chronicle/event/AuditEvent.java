@@ -2,6 +2,7 @@
 package io.github.andriyko69.chronicle.event;
 
 import io.github.andriyko69.chronicle.codec.BlockDeltaPayloadCodec;
+import io.github.andriyko69.chronicle.codec.ItemTransactionPayloadCodec;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Arrays;
@@ -16,9 +17,11 @@ public record AuditEvent(EventId id, Instant occurredAt, EventEnvelope envelope,
             if (payloadVersion != 1 || payload.length > MAX_VALUE_BYTES)
                 throw new IllegalArgumentException("Invalid legacy payload");
         } else {
-            if (payloadVersion != BlockDeltaPayload.VERSION)
-                throw new IllegalArgumentException("Unsupported block payload version " + payloadVersion);
-            new BlockDeltaPayloadCodec().decode(payloadVersion, payload);
+            switch (envelope.eventType()) {
+                case "BLOCK_BREAK", "BLOCK_PLACE" -> new BlockDeltaPayloadCodec().decode(payloadVersion, payload);
+                case "ITEM_TAKE", "ITEM_PUT" -> new ItemTransactionPayloadCodec().decode(payloadVersion, payload);
+                default -> throw new IllegalArgumentException("Unsupported event type " + envelope.eventType());
+            }
         }
     }
     public AuditEvent(EventId id, Instant occurredAt, String value) {
@@ -27,6 +30,12 @@ public record AuditEvent(EventId id, Instant occurredAt, EventEnvelope envelope,
     public static AuditEvent block(EventId id, Instant occurredAt, EventEnvelope envelope, BlockDeltaPayload delta) {
         return new AuditEvent(id, occurredAt, Objects.requireNonNull(envelope), BlockDeltaPayload.VERSION,
                 new BlockDeltaPayloadCodec().encode(delta));
+    }
+    public static AuditEvent item(EventId id, Instant occurredAt, EventEnvelope envelope, ItemTransactionPayload transaction) {
+        if (!envelope.eventType().equals("ITEM_TAKE") && !envelope.eventType().equals("ITEM_PUT"))
+            throw new IllegalArgumentException("Expected item event type");
+        return new AuditEvent(id, occurredAt, envelope, ItemTransactionPayload.VERSION,
+                new ItemTransactionPayloadCodec().encode(transaction));
     }
     private static byte[] legacyBytes(String value) {
         Objects.requireNonNull(value);

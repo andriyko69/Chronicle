@@ -3,6 +3,7 @@ package io.github.andriyko69.chronicle.gametest;
 
 import io.github.andriyko69.chronicle.event.ChronicleClock;
 import io.github.andriyko69.chronicle.listener.PlayerBlockListener;
+import io.github.andriyko69.chronicle.container.ContainerSessionManager;
 import io.github.andriyko69.chronicle.runtime.*;
 import java.nio.file.Path;
 import java.util.UUID;
@@ -15,7 +16,10 @@ import net.neoforged.neoforge.event.server.*;
 public final class ChronicleTestMod {
     static ChronicleRuntime runtime;
     static CompletableFuture<Void> ready;
+    private final ContainerSessionManager containers;
     public ChronicleTestMod() {
+        containers = new ContainerSessionManager(() -> runtime, ChronicleClock.system());
+        containers.register();
         NeoForge.EVENT_BUS.addListener(this::starting);
         NeoForge.EVENT_BUS.addListener(this::stopping);
         new PlayerBlockListener(() -> runtime, ChronicleClock.system()).register();
@@ -25,5 +29,5 @@ public final class ChronicleTestMod {
         runtime = new ChronicleRuntime(InfrastructureConfig.defaults(root), ChronicleClock.system(), "gametest");
         ready = runtime.start().toCompletableFuture();
     }
-    private void stopping(ServerStoppingEvent event) { if (runtime != null) runtime.close(); }
+    private void stopping(ServerStoppingEvent event) { containers.stop(event.getServer()); if (runtime != null) runtime.close(); }
 }

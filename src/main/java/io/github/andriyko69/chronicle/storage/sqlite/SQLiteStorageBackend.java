@@ -2,7 +2,6 @@
 package io.github.andriyko69.chronicle.storage.sqlite;
 
 import io.github.andriyko69.chronicle.codec.ChronicleEventCodec;
-import io.github.andriyko69.chronicle.codec.BlockDeltaPayloadCodec;
 import io.github.andriyko69.chronicle.codec.EncodedAuditEvent;
 import io.github.andriyko69.chronicle.dlq.DeadLetterRecord;
 import io.github.andriyko69.chronicle.event.*;
@@ -250,8 +249,7 @@ public final class SQLiteStorageBackend implements StorageBackend {
                 try (var rows = select.executeQuery()) {
                     while (rows.next()) {
                         var event = domainEvent(rows);
-                        var delta = new BlockDeltaPayloadCodec().decode(event.payloadVersion(), event.payload());
-                        values.add(new LookupRow(event.id(), event.occurredAt(), event.envelope(), delta.before(), delta.after(), delta.snapshotStatus()));
+                        values.add(LookupRow.decode(event));
                     }
                 }
                 boolean more = values.size() > LookupSpec.PAGE_SIZE;

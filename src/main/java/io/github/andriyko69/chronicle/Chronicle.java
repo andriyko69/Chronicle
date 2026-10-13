@@ -11,6 +11,7 @@ import io.github.andriyko69.chronicle.event.ChronicleClock;
 import io.github.andriyko69.chronicle.runtime.ChronicleRuntime;
 import io.github.andriyko69.chronicle.runtime.InfrastructureConfig;
 import io.github.andriyko69.chronicle.listener.PlayerBlockListener;
+import io.github.andriyko69.chronicle.container.ContainerSessionManager;
 import io.github.andriyko69.chronicle.command.ChronicleCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,9 +24,12 @@ public final class Chronicle {
     private final String version;
     private ChronicleRuntime runtime;
     private final ChronicleCommands commands;
+    private final ContainerSessionManager containers;
 
     public Chronicle(ModContainer container) {
         version = container.getModInfo().getVersion().toString();
+        containers = new ContainerSessionManager(() -> runtime, ChronicleClock.system());
+        containers.register();
         commands = new ChronicleCommands(() -> runtime, ChronicleClock.system());
         NeoForge.EVENT_BUS.addListener(commands::onRegister);
         NeoForge.EVENT_BUS.addListener(this::starting);
@@ -44,6 +48,7 @@ public final class Chronicle {
         }
     }
     private void stopping(ServerStoppingEvent event) {
+        containers.stop(event.getServer());
         commands.clearSessions();
         if (runtime != null) {
             try { runtime.close(); }

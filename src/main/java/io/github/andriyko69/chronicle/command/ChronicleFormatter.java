@@ -25,9 +25,29 @@ public final class ChronicleFormatter {
             lines.add(row.id() + " | " + row.occurredAt() + " (" + age + "s ago) | "
                     + e.worldId() + " (" + e.x() + ", " + e.y() + ", " + e.z() + ") | " + e.eventType()
                     + " | " + e.actorId() + " [" + e.actorType() + ", " + (e.actorUuid() == null ? "no UUID" : e.actorUuid()) + "]"
-                    + " | " + e.targetId() + " | " + state(row.before()) + " → " + state(row.after()) + nbt);
+                    + " | " + e.targetId() + " | " + (row.item() == null ? state(row.before()) + " → " + state(row.after()) + nbt : item(row.item())));
         }
         return List.copyOf(lines);
+    }
+    private static String item(ItemTransactionPayload item) {
+        String name = item.customName() == null ? "" : " name=\"" + safeName(item.customName()) + "\"";
+        String enchantments = item.enchantments().isEmpty() ? "" : item.enchantments().entrySet().stream()
+                .map(e -> e.getKey() + "=" + e.getValue()).collect(Collectors.joining(",", " enchantments=[", "]"));
+        String damage = item.damage() == null ? "" : " damage=" + item.damage();
+        String components = item.componentSnapshotStatus() == ItemTransactionPayload.ComponentSnapshotStatus.NONE ? ""
+                : " [components: " + item.componentSnapshotStatus().name().toLowerCase(Locale.ROOT) + "]";
+        return "count=" + item.count() + " container=" + item.containerBlockId() + name + enchantments + damage + components;
+    }
+    private static String safeName(String name) {
+        var result = new StringBuilder();
+        name.codePoints().forEach(point -> {
+            if (Character.isISOControl(point) || point == 0x00A7 || point == 0x2028 || point == 0x2029) result.append(' ');
+            else {
+                if (point == '"' || point == '\\') result.append('\\');
+                result.appendCodePoint(point);
+            }
+        });
+        return result.toString();
     }
     private static String state(BlockStateSnapshot state) {
         return state.blockId() + (state.properties().isEmpty() ? "" : state.properties().entrySet().stream()
