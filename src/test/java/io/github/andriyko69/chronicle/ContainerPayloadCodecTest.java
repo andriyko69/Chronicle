@@ -33,6 +33,32 @@ class ContainerPayloadCodecTest {
         assertEquals(plain, codec.decode(1, codec.encode(plain)));
         assertTrue(codec.encode(plain).length < 64);
     }
+    @Test void slotlessPayloadsStayVersionOneAndSlottedOnesRoundTripAsVersionTwo() throws Exception {
+        var plain = payload(3, ItemTransactionPayload.ComponentSnapshotStatus.PRESENT);
+        byte[] v1 = codec.encode(plain);
+        assertEquals(1, plain.version());
+        assertEquals(1, ByteBuffer.wrap(v1).getInt(0), "Existing rows and journals keep their exact bytes");
+        var slotted = plain.withSlot(4);
+        byte[] v2 = codec.encode(slotted);
+        assertEquals(2, slotted.version());
+        assertArrayEquals(Arrays.copyOfRange(v1, 4, v1.length), Arrays.copyOfRange(v2, 4, v1.length), "v2 only appends the slot");
+        assertEquals(slotted, codec.decode(2, v2));
+        assertEquals(Integer.valueOf(4), codec.decode(2, v2).slot());
+        assertEquals(slotted.withCount(1).slot(), Integer.valueOf(4), "Net-diff counts keep the slot");
+        assertNotEquals(plain, slotted);
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(1, v2), "Header and declared version must agree");
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(2, v1));
+        for (int size = v1.length; size < v2.length; size++) {
+            byte[] truncated = Arrays.copyOf(v2, size);
+            assertThrows(IllegalArgumentException.class, () -> codec.decode(2, truncated), "length=" + size);
+        }
+        assertThrows(IllegalArgumentException.class, () -> plain.withSlot(-1));
+        assertThrows(IllegalArgumentException.class, () -> plain.withSlot(ItemTransactionPayload.MAX_SLOT + 1));
+        var event = AuditEvent.item(EventId.generate(), Instant.now(), event("ITEM_PUT", "minecraft:book", 1, Instant.now()).envelope(), slotted);
+        assertEquals(2, event.payloadVersion());
+        var journal = new ChronicleEventCodec();
+        assertEquals(event, journal.decode(journal.encode(event)));
+    }
     @Test void bytesAndEnchantmentsAreImmutableAndCanonical() {
         byte[] bytes = new byte[] {1, 2};
         var enchantments = new TreeMap<>(Map.of("mod:z", 2, "mod:a", 3));

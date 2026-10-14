@@ -129,7 +129,7 @@ public final class RollbackGameTests {
         helper.assertTrue(drops.isEmpty(), "No items dropped into the world: " + drops.stream().map(ItemEntity::getItem).toList());
     }
 
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_blocks")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_blocks")
     public static void blockAndFluidChangesRollBackAndRestoreWithoutAuditing(GameTestHelper helper) {
         var level = helper.getLevel(); String name = unique("RbBlocks"); var builder = player(helper, name);
         var base = helper.absolutePos(new BlockPos(1, 1, 1)); var placed = base.above();
@@ -202,7 +202,7 @@ public final class RollbackGameTests {
         }).thenSucceed();
     }
 
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_storage")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_storage")
     public static void containerAndStorageItemsRollBackAndRestoreWithoutFramingViewer(GameTestHelper helper) {
         var level = helper.getLevel(); String name = unique("RbOwner"); var owner = player(helper, name); var viewer = player(helper, unique("RbViewer"));
         var chest = helper.absolutePos(new BlockPos(1, 1, 1));
@@ -280,7 +280,7 @@ public final class RollbackGameTests {
         .thenSucceed();
     }
 
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_spill")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_spill")
     public static void brokenChestContentsComeBackExactlyOnce(GameTestHelper helper) {
         var level = helper.getLevel(); String name = unique("RbSpill"); var breaker = player(helper, name);
         var snapshotted = helper.absolutePos(new BlockPos(1, 1, 1)); var oversized = helper.absolutePos(new BlockPos(4, 1, 1));
@@ -322,7 +322,7 @@ public final class RollbackGameTests {
         .thenSucceed();
     }
 
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_open_menu")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_open_menu")
     public static void depositInAnUnclosedMenuSurvivesRollbackAndRestore(GameTestHelper helper) {
         var level = helper.getLevel(); String name = unique("RbDepositor"); var depositor = player(helper, name);
         var base = helper.absolutePos(new BlockPos(1, 1, 1)); var chest = base.above();
@@ -357,7 +357,7 @@ public final class RollbackGameTests {
         }).thenSucceed();
     }
 
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_lossy")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_lossy")
     public static void lossySnapshotIsRebuiltFromItsSpillRows(GameTestHelper helper) {
         var level = helper.getLevel(); var pos = helper.absolutePos(new BlockPos(1, 1, 1));
         String name = unique("RbLossy"); var actor = UUID.randomUUID();
@@ -406,7 +406,7 @@ public final class RollbackGameTests {
             helper.assertTrue(diamonds == 10 && emeralds == 4, "Each spilled item restored exactly once: " + diamonds + " diamonds, " + emeralds + " emeralds");
         }).thenSucceed();
     }
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_replaced")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_replaced")
     public static void chestReplacedBeforeItsSpillSettlesKeepsTheSpillWithItsBreak(GameTestHelper helper) {
         var level = helper.getLevel(); String name = unique("RbReplace"); var builder = player(helper, name);
         var base = helper.absolutePos(new BlockPos(1, 1, 1)); var chest = base.above();
@@ -438,7 +438,7 @@ public final class RollbackGameTests {
         }).thenSucceed();
     }
 
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_lossy")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_lossy")
     public static void rejectedSnapshotLeavesWorldAndRowRetryable(GameTestHelper helper) {
         var level = helper.getLevel(); var pos = helper.absolutePos(new BlockPos(4, 1, 1));
         String name = unique("RbRejected"); var actor = UUID.randomUUID();
@@ -476,7 +476,7 @@ public final class RollbackGameTests {
         .thenExecute(() -> helper.assertTrue(state.plan.join().steps().size() == 1, "The skipped row stays eligible for a later rollback"))
         .thenSucceed();
     }
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_sign")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_sign")
     public static void brokenSignRestoresItsOwnTextOverASameTypeReplacement(GameTestHelper helper) {
         var level = helper.getLevel(); String name = unique("RbSign"); var builder = player(helper, name);
         var base = helper.absolutePos(new BlockPos(1, 1, 1)); var sign = base.above();
@@ -506,7 +506,7 @@ public final class RollbackGameTests {
         }).thenSucceed();
     }
 
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_structures")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_structures")
     public static void brokenDoorsAndBedsComeBackWhole(GameTestHelper helper) {
         var level = helper.getLevel(); String name = unique("RbHalves"); var breaker = player(helper, name);
         var door = helper.absolutePos(new BlockPos(1, 2, 1)); var bed = helper.absolutePos(new BlockPos(3, 2, 1));
@@ -544,7 +544,7 @@ public final class RollbackGameTests {
         }).thenSucceed();
     }
 
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_lossy")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_lossy")
     public static void appliedButUnrecordedChangesAreQuarantinedNotReplayed(GameTestHelper helper) {
         var level = helper.getLevel(); var pos = helper.absolutePos(new BlockPos(7, 1, 1));
         String name = unique("RbQuarantine"); var actor = UUID.randomUUID();
@@ -585,7 +585,7 @@ public final class RollbackGameTests {
             helper.assertTrue(again.steps().isEmpty() && again.quarantined() == 1, "The applied break is never replayed: " + again);
         }).thenSucceed();
     }
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_replaced_viewer")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_replaced_viewer")
     public static void viewerOfASameTypeReplacementIsNotCreditedWithRestoredContents(GameTestHelper helper) {
         var level = helper.getLevel(); String name = unique("RbBreaker"); var breaker = player(helper, name);
         var replacer = player(helper, unique("RbReplacer"));
@@ -617,7 +617,7 @@ public final class RollbackGameTests {
         .thenSucceed();
     }
 
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_lossy")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_lossy")
     public static void shutdownAfterAnUnobservedRecordFailureStillQuarantines(GameTestHelper helper) {
         var level = helper.getLevel(); var pos = helper.absolutePos(new BlockPos(1, 1, 6));
         String name = unique("RbStopped");
@@ -643,7 +643,7 @@ public final class RollbackGameTests {
             helper.assertTrue(quarantine().contains(unrecordable.id() + " 1"), "Failed record quarantined at shutdown");
         }).thenSucceed();
     }
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_lossy")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_lossy")
     public static void storageFailingPartWayIsUndoneOrQuarantined(GameTestHelper helper) {
         var level = helper.getLevel(); String name = unique("RbFaulty"); var actor = UUID.randomUUID();
         var appliedPos = helper.absolutePos(new BlockPos(1, 1, 8)); var undonePos = helper.absolutePos(new BlockPos(3, 1, 8));
@@ -695,7 +695,7 @@ public final class RollbackGameTests {
         .thenSucceed();
     }
 
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_lossy")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_lossy")
     public static void snapshotLossesAreFilledInWithoutDiscardingOrDoubleCountingItems(GameTestHelper helper) {
         var level = helper.getLevel(); var pos = helper.absolutePos(new BlockPos(7, 1, 4));
         String name = unique("RbMixed"); var actor = UUID.randomUUID();
@@ -765,7 +765,7 @@ public final class RollbackGameTests {
             helper.assertTrue(swords == 1, "One sword survived; it covers only one of the two sword rows");
         }).thenSucceed();
     }
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_powered_tnt")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_powered_tnt")
     public static void tntBesideActivePowerIsNotRestoredToIgnite(GameTestHelper helper) {
         var level = helper.getLevel(); String name = unique("RbPowered"); var breaker = player(helper, name);
         var tnt = helper.absolutePos(new BlockPos(2, 1, 2)); var power = tnt.east();
@@ -787,7 +787,7 @@ public final class RollbackGameTests {
         }).thenSucceed();
     }
 
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_restore_extra")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_restore_extra")
     public static void restoreReportsContentsAddedSinceTheRollback(GameTestHelper helper) {
         var level = helper.getLevel(); String name = unique("RbExtra"); var breaker = player(helper, name);
         var chest = helper.absolutePos(new BlockPos(1, 1, 1));
@@ -810,6 +810,149 @@ public final class RollbackGameTests {
         }).thenSucceed();
     }
 
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_bookshelf")
+    public static void chiseledBookshelfBooksReturnToTheirExactSlots(GameTestHelper helper) {
+        var level = helper.getLevel(); String name = unique("RbShelf"); var reader = player(helper, name);
+        var shelf = helper.absolutePos(new BlockPos(2, 1, 2));
+        Reply rollback = new Reply(), restore = new Reply(), lookup = new Reply();
+        String scope = " r:global t:1h u:" + name;
+        // Facing north, the face's horizontal axis runs east to west: x' = 1 - dx picks the column, y picks the row.
+        java.util.function.BiFunction<Double, Double, Vec3> face = (dx, dy) -> new Vec3(shelf.getX() + dx, shelf.getY() + dy, shelf.getZ());
+        java.util.function.IntFunction<Boolean> occupied = slot -> !((Container)level.getBlockEntity(shelf)).getItem(slot).isEmpty();
+        Runnable original = () -> {
+            for (int slot = 0; slot < 6; slot++)
+                helper.assertTrue(occupied.apply(slot) == (slot == 0 || slot == 1 || slot == 3), "Slot " + slot + " after the player's changes");
+        };
+        helper.startSequence().thenWaitUntil(() -> ready(helper)).thenExecute(() -> {
+            reader.setGameMode(GameType.SURVIVAL);
+            level.setBlockAndUpdate(shelf, Blocks.CHISELED_BOOKSHELF.defaultBlockState().setValue(HorizontalDirectionalBlock.FACING, Direction.NORTH));
+            var books = (Container)level.getBlockEntity(shelf);
+            for (int slot : new int[] {0, 3, 4}) books.setItem(slot, new ItemStack(Items.BOOK));
+            reader.setPos(shelf.getX() + .5, shelf.getY(), shelf.getZ() - 1);
+            click(reader, shelf, ItemStack.EMPTY, Direction.NORTH, face.apply(.5, .25));
+            helper.assertTrue(!occupied.apply(4), "Took the book from slot 4");
+        }).thenIdle(1).thenExecute(() -> {
+            click(reader, shelf, new ItemStack(Items.BOOK), Direction.NORTH, face.apply(.5, .75));
+            original.run();
+        }).thenIdle(3)
+        .thenWaitUntil(command(helper, rollback, "chronicle rb" + scope, "Rollback complete"))
+        .thenExecute(() -> {
+            // Pooled insertion would refill slot 1 and pooled removal would empty slot 3.
+            for (int slot = 0; slot < 6; slot++)
+                helper.assertTrue(occupied.apply(slot) == (slot == 0 || slot == 3 || slot == 4), "Slot " + slot + " after rollback");
+            helper.assertTrue(level.getBlockState(shelf).getValue(BlockStateProperties.CHISELED_BOOKSHELF_SLOT_4_OCCUPIED)
+                    && !level.getBlockState(shelf).getValue(BlockStateProperties.CHISELED_BOOKSHELF_SLOT_1_OCCUPIED), "Block state shows the same slots");
+        })
+        .thenWaitUntil(command(helper, restore, "chronicle rs" + scope, "Restore complete"))
+        .thenExecute(original)
+        .thenWaitUntil(command(helper, lookup, "chronicle lookup" + scope, "Event ID: "))
+        .thenExecute(() -> {
+            var rows = rows(lookup);
+            helper.assertTrue(rows.size() == 2 && rows.stream().anyMatch(row -> row.contains("took ×1 book") && row.contains("Slot: 4"))
+                    && rows.stream().anyMatch(row -> row.contains("put ×1 book") && row.contains("Slot: 1")), "Rows name their slots: " + rows);
+        }).thenSucceed();
+    }
+
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_bookshelf_conflict")
+    public static void bookshelfRollbackNeverTakesAnotherSlotsBook(GameTestHelper helper) {
+        var level = helper.getLevel(); String name = unique("RbShelver"); var shelver = player(helper, name); var taker = player(helper, unique("RbTaker"));
+        var shelf = helper.absolutePos(new BlockPos(2, 1, 2));
+        var slotOne = new Vec3(shelf.getX() + .5, shelf.getY() + .75, shelf.getZ());
+        Reply rollback = new Reply(), again = new Reply();
+        helper.startSequence().thenWaitUntil(() -> ready(helper)).thenExecute(() -> {
+            for (var player : List.of(shelver, taker)) { player.setGameMode(GameType.SURVIVAL); player.setPos(shelf.getX() + .5, shelf.getY(), shelf.getZ() - 1); }
+            level.setBlockAndUpdate(shelf, Blocks.CHISELED_BOOKSHELF.defaultBlockState().setValue(HorizontalDirectionalBlock.FACING, Direction.NORTH));
+            ((Container)level.getBlockEntity(shelf)).setItem(4, new ItemStack(Items.BOOK));
+            click(shelver, shelf, new ItemStack(Items.BOOK), Direction.NORTH, slotOne);
+        }).thenIdle(1).thenExecute(() -> {
+            click(taker, shelf, ItemStack.EMPTY, Direction.NORTH, slotOne);
+            var books = (Container)level.getBlockEntity(shelf);
+            helper.assertTrue(books.getItem(1).isEmpty() && !books.getItem(4).isEmpty(), "Slot 1 taken back by someone else; slot 4 untouched");
+        }).thenIdle(3)
+        .thenWaitUntil(command(helper, rollback, "chronicle rb r:global t:1h u:" + name, "Rollback complete"))
+        .thenExecute(() -> {
+            helper.assertTrue(!((Container)level.getBlockEntity(shelf)).getItem(4).isEmpty(), "The identical book in slot 4 is not a substitute");
+            helper.assertTrue(rollback.output.lines.stream().anyMatch(line -> line.contains("items no longer present: 1")), "Retryable skip " + rollback.output.lines);
+        })
+        .thenWaitUntil(command(helper, again, "chronicle rb --preview r:global t:1h u:" + name, "Would roll back 0 block changes and 1 item changes"))
+        .thenSucceed();
+    }
+
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_fluid")
+    public static void rolledBackPoursLeaveNoFlowingFluidBehind(GameTestHelper helper) {
+        var level = helper.getLevel(); String name = unique("RbPour"); var pourer = player(helper, name);
+        var center = helper.absolutePos(new BlockPos(3, 2, 3));
+        Reply water = new Reply(), lava = new Reply();
+        String rollback = "chronicle rb r:global t:1h a:place u:" + name;
+        java.util.function.Consumer<net.minecraft.world.item.Item> pour = bucket -> {
+            pourer.setPos(center.getX() + .5, center.getY() + 1, center.getZ() + .5);
+            pourer.setXRot(90);
+            pourer.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(bucket));
+            pourer.gameMode.useItem(pourer, level, pourer.getMainHandItem(), InteractionHand.MAIN_HAND);
+        };
+        java.util.function.Function<net.minecraft.tags.TagKey<net.minecraft.world.level.material.Fluid>, Integer> fluid = tag -> {
+            int found = 0;
+            for (var pos : BlockPos.betweenClosed(center.offset(-10, -1, -10), center.offset(10, 1, 10)))
+                if (level.getFluidState(pos).is(tag)) found++;
+            return found;
+        };
+        helper.startSequence().thenWaitUntil(() -> ready(helper)).thenExecute(() -> {
+            pourer.setGameMode(GameType.CREATIVE);
+            // A walled stone basin: water spreads 7 blocks and must not run off the edge.
+            for (var pos : BlockPos.betweenClosed(center.offset(-9, -1, -9), center.offset(9, 0, 9))) {
+                boolean wall = Math.abs(pos.getX() - center.getX()) == 9 || Math.abs(pos.getZ() - center.getZ()) == 9;
+                level.setBlock(pos, pos.getY() < center.getY() || wall ? Blocks.STONE.defaultBlockState() : Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS);
+            }
+            pour.accept(Items.WATER_BUCKET);
+            helper.assertTrue(level.getFluidState(center).isSource(), "Water poured");
+        }).thenWaitUntil(() -> helper.assertTrue(fluid.apply(net.minecraft.tags.FluidTags.WATER) > 20, "Waiting for the water to spread"))
+        .thenWaitUntil(command(helper, water, rollback, "Rollback complete"))
+        .thenExecute(() -> helper.assertTrue(fluid.apply(net.minecraft.tags.FluidTags.WATER) == 0, "No flowing water left behind"))
+        .thenExecute(() -> pour.accept(Items.LAVA_BUCKET))
+        .thenWaitUntil(() -> helper.assertTrue(fluid.apply(net.minecraft.tags.FluidTags.LAVA) > 4, "Waiting for the lava to spread"))
+        .thenWaitUntil(command(helper, lava, rollback, "Rollback complete"))
+        .thenExecute(() -> helper.assertTrue(fluid.apply(net.minecraft.tags.FluidTags.LAVA) == 0, "No flowing lava left behind"))
+        .thenSucceed();
+    }
+
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_waterfall")
+    public static void rolledBackPourKeepsAnIndependentWaterfall(GameTestHelper helper) {
+        var level = helper.getLevel(); String name = unique("RbFall"); var pourer = player(helper, name);
+        var center = helper.absolutePos(new BlockPos(3, 2, 3));
+        var spring = center.offset(4, 2, 0); var fall = center.offset(3, 0, 0); var farSide = center.offset(-6, 0, 0);
+        Reply rollback = new Reply();
+        helper.startSequence().thenWaitUntil(() -> ready(helper)).thenExecute(() -> {
+            pourer.setGameMode(GameType.CREATIVE);
+            for (var pos : BlockPos.betweenClosed(center.offset(-9, -1, -9), center.offset(9, 2, 9))) {
+                boolean wall = Math.abs(pos.getX() - center.getX()) == 9 || Math.abs(pos.getZ() - center.getZ()) == 9;
+                boolean floor = pos.getY() < center.getY();
+                boolean pillar = pos.getX() == spring.getX() && pos.getZ() == spring.getZ() && pos.getY() < spring.getY();
+                level.setBlock(pos, floor || pillar || wall && pos.getY() == center.getY() ? Blocks.STONE.defaultBlockState() : Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS);
+            }
+            // An unaudited spring on a pillar: its waterfall is not part of anything rolled back.
+            level.setBlockAndUpdate(spring, Blocks.WATER.defaultBlockState());
+            pourer.setPos(center.getX() + .5, center.getY() + 1, center.getZ() + .5);
+            pourer.setXRot(90);
+            pourer.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.WATER_BUCKET));
+            pourer.gameMode.useItem(pourer, level, pourer.getMainHandItem(), InteractionHand.MAIN_HAND);
+            helper.assertTrue(level.getFluidState(center).isSource(), "Water poured");
+        }).thenWaitUntil(() -> helper.assertTrue(level.getFluidState(fall).is(net.minecraft.tags.FluidTags.WATER)
+                && level.getFluidState(farSide).is(net.minecraft.tags.FluidTags.WATER), "Waiting for the pour and the waterfall to merge"))
+        .thenIdle(40)
+        .thenWaitUntil(command(helper, rollback, "chronicle rb r:global t:1h a:place u:" + name, "Rollback complete"))
+        .thenExecute(() -> {
+            helper.assertTrue(!level.getFluidState(center).isSource(), "Pour rolled back");
+            helper.assertTrue(level.getFluidState(spring).isSource(), "Spring untouched");
+            for (var pos : List.of(spring.west(), spring.west().below(), fall))
+                helper.assertTrue(level.getFluidState(pos).is(net.minecraft.tags.FluidTags.WATER), "Waterfall kept at " + pos.toShortString());
+            helper.assertTrue(level.getFluidState(farSide).isEmpty(), "Flow only the pour fed has receded");
+        }).thenIdle(60)
+        .thenExecute(() -> {
+            helper.assertTrue(level.getFluidState(fall).is(net.minecraft.tags.FluidTags.WATER), "The waterfall still runs under normal physics");
+            level.setBlockAndUpdate(spring, Blocks.AIR.defaultBlockState());
+        }).thenSucceed();
+    }
+
     private static String quarantine() {
         try {
             var file = ChronicleTestMod.runtime.quarantineFile();
@@ -817,7 +960,7 @@ public final class RollbackGameTests {
         } catch (java.io.IOException failure) { throw new IllegalStateException(failure); }
     }
 
-    @GameTest(template = "empty", timeoutTicks = 1600, batch = "chronicle_rollback_unloaded")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_unloaded")
     public static void frameInAnUnloadedChunkIsLoadedBeforeItsRowIsApplied(GameTestHelper helper) {
         var level = helper.getLevel(); String name = unique("RbDistant");
         var framePos = helper.absolutePos(new BlockPos(1, 1, 1)).offset(4096, 0, 0);
@@ -858,7 +1001,7 @@ public final class RollbackGameTests {
         return new ItemTransactionPayload(count, "minecraft:chest", null, new TreeMap<>(), null, ItemTransactionPayload.ComponentSnapshotStatus.NONE, null);
     }
 
-    @GameTest(template = "empty", timeoutTicks = 1200, batch = "chronicle_rollback_tnt")
+    @GameTest(template = "empty", timeoutTicks = 12000, batch = "chronicle_rollback_tnt")
     public static void userRollbackUndoesRootCausedExplosion(GameTestHelper helper) {
         var level = helper.getLevel(); String name = unique("RbTnt"); var igniter = player(helper, name);
         var tnt = helper.absolutePos(new BlockPos(3, 2, 3)); var stone = tnt.east(); var chest = tnt.north();

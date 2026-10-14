@@ -34,8 +34,7 @@ public record AuditEvent(EventId id, Instant occurredAt, EventEnvelope envelope,
     public static AuditEvent item(EventId id, Instant occurredAt, EventEnvelope envelope, ItemTransactionPayload transaction) {
         if (!envelope.eventType().equals("ITEM_TAKE") && !envelope.eventType().equals("ITEM_PUT"))
             throw new IllegalArgumentException("Expected item event type");
-        return new AuditEvent(id, occurredAt, envelope, ItemTransactionPayload.VERSION,
-                new ItemTransactionPayloadCodec().encode(transaction));
+        return new AuditEvent(id, occurredAt, envelope, transaction.version(), new ItemTransactionPayloadCodec().encode(transaction));
     }
     private static byte[] legacyBytes(String value) {
         Objects.requireNonNull(value);

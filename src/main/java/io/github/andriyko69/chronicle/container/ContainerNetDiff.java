@@ -6,8 +6,10 @@ import java.util.*;
 
 public final class ContainerNetDiff {
     private ContainerNetDiff() {}
-    public record Key(String itemId, String componentKey) {
+    /** {@code slot} keeps positional storage (chiseled bookshelves) diffed per slot; null pools all slots by identity. */
+    public record Key(String itemId, String componentKey, Integer slot) {
         public Key { ItemTransactionPayload.resource(itemId); Objects.requireNonNull(componentKey); }
+        public Key(String itemId, String componentKey) { this(itemId, componentKey, null); }
     }
     public record Stack(Key key, ItemTransactionPayload payload) {
         public Stack { Objects.requireNonNull(key); Objects.requireNonNull(payload); }

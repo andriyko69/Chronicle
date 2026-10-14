@@ -134,7 +134,7 @@ public final class RollbackEngine {
             current.next++;
             // A break and its spills are one unit: the spills' handling depends on how the break was applied.
             budget -= 1 + step.companions().size();
-            try { apply(current, step, recorded); }
+            try { budget -= apply(current, step, recorded); }
             catch (RuntimeException failure) {
                 // Whatever this step changed is unknown; the rows applied before it in this slice are still recorded below.
                 var uncertain = new ArrayList<EventId>();
@@ -155,7 +155,8 @@ public final class RollbackEngine {
         current.recording = current.runtime.setRolledBack(recorded, !current.plan.restore()).toCompletableFuture();
     }
 
-    private void apply(Job current, RollbackPlan.Step step, List<EventId> recorded) {
+    /** Returns the extra budget the step consumed beyond its own operations. */
+    private int apply(Job current, RollbackPlan.Step step, List<EventId> recorded) {
         boolean restore = current.plan.restore();
         // Checked before the restore clears the container: anything beyond the spill rows was added since the rollback.
         boolean beyondSpills = restore && step.block() && !step.companions().isEmpty() && current.world.exceeds(step.event(), step.companions());
@@ -163,7 +164,7 @@ public final class RollbackEngine {
         if (!outcome.applied()) {
             current.skip(outcome.skip(), 1);
             if (!step.companions().isEmpty()) current.skip(WorldRollback.Skip.PAIRED_BREAK_SKIPPED, step.companions().size());
-            return;
+            return 0;
         }
         recorded.add(step.event().id());
         if (step.block()) current.blocks++; else current.items++;
@@ -174,12 +175,12 @@ public final class RollbackEngine {
             LOG.warn("Chronicle {} at {} {},{},{} cleared storage contents the request did not cover", restore ? "restore" : "rollback",
                     at.worldId(), at.x(), at.y(), at.z());
         }
-        if (step.companions().isEmpty()) return;
+        if (step.companions().isEmpty()) return outcome.work();
         // A restored break removes the container with exactly the contents its spill rows recorded.
         if (restore) {
             step.companions().forEach(companion -> recorded.add(companion.id()));
             current.covered += step.companions().size();
-            return;
+            return outcome.work();
         }
         if (!outcome.contentsRestored()) {
             for (var companion : step.companions()) {
@@ -188,7 +189,7 @@ public final class RollbackEngine {
                 recorded.add(companion.id());
                 current.items++;
             }
-            return;
+            return outcome.work();
         }
         // The snapshot already holds the spilled contents: inserting the spill rows on top would duplicate every item.
         // Only what the load lost is inserted, and loaded items are never cleared to make room for a rebuild.
@@ -208,6 +209,7 @@ public final class RollbackEngine {
         if (!partial.isEmpty()) {
             LOG.warn("Chronicle rollback of {} could only partly restore spills {}; they are {}", step.event().id(), partial, quarantine(current, partial));
         }
+        return outcome.work();
     }
 
     private static WorldRollback.Outcome attempt(Job current, RollbackPlan.Step step, boolean restore) {

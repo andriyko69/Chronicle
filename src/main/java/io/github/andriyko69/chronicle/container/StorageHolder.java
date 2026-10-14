@@ -27,11 +27,19 @@ public sealed interface StorageHolder {
     Presence presence();
     List<ItemStack> items();
 
+    /** Whether each slot is a distinct position the player chose, so rollback must target the same slot. */
+    default boolean positional() { return false; }
+
     default Map<ContainerNetDiff.Key, ItemTransactionPayload> snapshot() {
         if (!level().getServer().isSameThread()) throw new IllegalStateException("Storage snapshot off server thread");
         var stacks = new ArrayList<ContainerNetDiff.Stack>();
-        for (var stack : items()) {
-            if (!stack.isEmpty()) stacks.add(ContainerItemCapture.capture(stack, storageId(), level().registryAccess()));
+        var items = items();
+        for (int slot = 0; slot < items.size(); slot++) {
+            var stack = items.get(slot);
+            if (stack.isEmpty()) continue;
+            var captured = ContainerItemCapture.capture(stack, storageId(), level().registryAccess());
+            stacks.add(positional() ? new ContainerNetDiff.Stack(new ContainerNetDiff.Key(captured.key().itemId(), captured.key().componentKey(), slot),
+                    captured.payload().withSlot(slot)) : captured);
         }
         return ContainerNetDiff.group(stacks);
     }
@@ -74,6 +82,7 @@ public sealed interface StorageHolder {
 
     record Block(ServerLevel level, BlockPos position, String storageId, BlockEntity entity) implements StorageHolder {
         @Override public Object identity() { return entity; }
+        @Override public boolean positional() { return entity instanceof ChiseledBookShelfBlockEntity; }
         @Override public Presence presence() {
             if (!level.isLoaded(position)) return Presence.UNKNOWN;
             return entity.isRemoved() || level.getBlockEntity(position) != entity ? Presence.DESTROYED : Presence.PRESENT;

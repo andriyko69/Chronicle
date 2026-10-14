@@ -101,7 +101,7 @@ public final class ChronicleFormatter {
             line.append(hover(target, "Item: " + e.targetId() + "\nCount: " + item.count() + "\nContainer: " + item.containerBlockId()
                     + "\nCustom name: " + (item.customName() == null ? "none" : safeName(item.customName()))
                     + "\nEnchantments: " + item.enchantments() + "\nDamage: " + (item.damage() == null ? "none" : item.damage())
-                    + "\nComponents: " + item.componentSnapshotStatus() + status));
+                    + "\nComponents: " + item.componentSnapshotStatus() + (item.slot() == null ? "" : "\nSlot: " + item.slot()) + status));
             line.append(text(added ? " in " : " from ", GRAY)).append(text(shortId(item.containerBlockId()), WHITE));
         }
         if (row.rolledBack()) line.append(hover(text(" [RB]", DARK_GRAY), "Status: Rolled back\nRestore with /chronicle restore"));

@@ -17,6 +17,20 @@ class ContainerNetDiffTest {
     private static List<ContainerNetDiff.Delta> diff(List<ContainerNetDiff.Stack> before, List<ContainerNetDiff.Stack> after) {
         return ContainerNetDiff.between(ContainerNetDiff.group(before), ContainerNetDiff.group(after));
     }
+    @Test void positionalSlotsDiffPerSlotAndCarryTheirIndex() {
+        java.util.function.BiFunction<Integer, Integer, ContainerNetDiff.Stack> book = (slot, count) -> {
+            var payload = new ItemTransactionPayload(count, "minecraft:chiseled_bookshelf", null, new TreeMap<>(), null,
+                    ItemTransactionPayload.ComponentSnapshotStatus.NONE, null).withSlot(slot);
+            return new ContainerNetDiff.Stack(new ContainerNetDiff.Key("minecraft:book", "none", slot), payload);
+        };
+        var moved = diff(List.of(book.apply(0, 1), book.apply(4, 1)), List.of(book.apply(0, 1), book.apply(1, 1)));
+        assertEquals(2, moved.size(), "Moving a book between slots is a take and a put, not net zero");
+        var take = moved.stream().filter(delta -> delta.eventType().equals("ITEM_TAKE")).findFirst().orElseThrow();
+        var put = moved.stream().filter(delta -> delta.eventType().equals("ITEM_PUT")).findFirst().orElseThrow();
+        assertEquals(Integer.valueOf(4), take.payload().slot());
+        assertEquals(Integer.valueOf(1), put.payload().slot());
+        assertNull(stack("diamond", 1, "plain").payload().slot(), "Other storage stays pooled by identity");
+    }
     @Test void depositWithdrawalSwapAndNetZero() {
         var diamonds = stack("diamond", 32, "plain");
         var deposit = diff(List.of(), List.of(diamonds));

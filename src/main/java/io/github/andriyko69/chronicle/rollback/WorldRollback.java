@@ -37,7 +37,12 @@ import net.minecraft.world.entity.decoration.ItemFrame;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.ChestBlock;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LecternBlock;
+import net.minecraft.world.level.block.LiquidBlock;
+import net.minecraft.world.level.material.FlowingFluid;
+import net.minecraft.world.level.material.Fluid;
+import net.minecraft.core.Direction;
 import net.minecraft.world.level.block.TntBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.CampfireBlockEntity;
@@ -62,6 +67,11 @@ final class WorldRollback {
     static final int BLOCK_FLAGS = Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS;
     /** Neighbour shapes still follow (a chest half re-pairs, water recedes), but anything they break drops nothing. */
     static final int SHAPE_FLAGS = Block.UPDATE_CLIENTS | Block.UPDATE_SUPPRESS_DROPS;
+    /** Water spreads 7 blocks and falls; the recession follows a little further, and is bounded however the fluid spread. */
+    static final int SWEEP_REACH = 12;
+    static final int SWEEP_LIMIT = 512;
+    /** Recession work charged to the engine's per-tick operation budget: one operation per this many examined blocks. */
+    static final int RECEDE_PER_OPERATION = 4;
     /** Holds a chunk at full status, which loads its entities, without ticking it; expires on its own. */
     private static final TicketType<ChunkPos> ENTITY_TICKET = TicketType.create("chronicle_rollback", Comparator.comparingLong(ChunkPos::toLong), 300);
     /** Snapshots are at most 64 KiB on disk; the accounter bounds their in-memory expansion. */
@@ -87,11 +97,12 @@ final class WorldRollback {
 
     /**
      * {@code contentsRestored}: the block entity was recreated from the snapshot, which already holds the spilled items.
-     * {@code discarded}: the replaced storage still held items, which were cleared rather than dropped.
+     * {@code discarded}: the replaced storage still held items, which were cleared rather than dropped. {@code work}: extra
+     * per-tick budget the change consumed beyond itself (receding stranded fluid).
      */
-    record Outcome(Skip skip, boolean contentsRestored, boolean discarded) {
-        static final Outcome APPLIED = new Outcome(null, false, false);
-        static Outcome skipped(Skip reason) { return new Outcome(reason, false, false); }
+    record Outcome(Skip skip, boolean contentsRestored, boolean discarded, int work) {
+        static final Outcome APPLIED = new Outcome(null, false, false, 0);
+        static Outcome skipped(Skip reason) { return new Outcome(reason, false, false, 0); }
         boolean applied() { return skip == null; }
     }
 
@@ -139,8 +150,13 @@ final class WorldRollback {
         // final contents (the loaded snapshot, or the reverted original) are in place.
         var session = removed == null ? null : WorldContainer.canonicalPosition(level, pos);
         if (removed != null) StorageAudit.externalChange(level, session, removed, true);
+        var fluid = current.getFluidState();
+        int work = 0;
+        // Draining a source (rolling back a pour, restoring a pickup, un-waterlogging) strands the flow it fed.
+        boolean drains = fluid.isSource() && !(target.getFluidState().isSource() && target.getFluidState().getType().isSame(fluid.getType()));
         try {
             if (recreate || current != target) mutate(level, pos, removed, target);
+            if (drains) work = recede(level, pos, fluid.getType()) / RECEDE_PER_OPERATION;
             // A door or bed half only survives beside its other half, which vanilla removed without an audit row of its own.
             if (placePartner) {
                 var occupant = level.getBlockState(partner);
@@ -166,7 +182,54 @@ final class WorldRollback {
         } finally {
             if (removed != null) StorageAudit.externalChange(level, session, removed, false);
         }
-        return new Outcome(null, snapshot != null, discarded);
+        return new Outcome(null, snapshot != null, discarded, work);
+    }
+
+    /**
+     * Recedes the flowing (never source) blocks of {@code fluid} stranded by a drained source, immediately rather than
+     * over many fluid ticks; lingering lava would keep igniting what the rollback just restored. Each connected flowing
+     * block is recomputed with vanilla's own rule until nothing changes, and only ever lowered or removed: flow that
+     * another source still feeds, such as a neighbouring waterfall, keeps exactly what that source sustains. The
+     * remainder is then left to ordinary fluid ticks, as is any block whose neighbours are not loaded: recomputing it
+     * would load chunks outside the engine's budget. Returns the blocks examined.
+     */
+    static int recede(ServerLevel level, BlockPos origin, Fluid fluid) {
+        if (!(fluid instanceof FlowingFluid flowing)) return 0;
+        var region = new LinkedHashSet<BlockPos>();
+        var queue = new ArrayDeque<BlockPos>();
+        queue.add(origin);
+        while (!queue.isEmpty() && region.size() < SWEEP_LIMIT) {
+            var pos = queue.poll();
+            for (var direction : Direction.values()) {
+                var next = pos.relative(direction);
+                if (next.distManhattan(origin) > SWEEP_REACH || region.contains(next) || !level.isLoaded(next)) continue;
+                var state = level.getBlockState(next);
+                var current = state.getFluidState();
+                if (!(state.getBlock() instanceof LiquidBlock) || current.isSource() || !current.getType().isSame(fluid)) continue;
+                region.add(next);
+                queue.add(next);
+            }
+        }
+        var work = new ArrayDeque<>(region);
+        int changed = 0;
+        // Levels only fall, at most eight steps per block, so this converges well within the bound.
+        for (int steps = region.size() * 9; !work.isEmpty() && steps > 0; steps--) {
+            var pos = work.poll();
+            var state = level.getBlockState(pos);
+            var current = state.getFluidState();
+            if (!(state.getBlock() instanceof LiquidBlock) || current.isEmpty() || current.isSource() || !current.getType().isSame(fluid)) continue;
+            if (Arrays.stream(Direction.values()).anyMatch(direction -> !level.isLoaded(pos.relative(direction)))) continue;
+            var next = flowing.getNewLiquid(level, pos, state);
+            if (!(next.isEmpty() || !next.isSource() && next.getType().isSame(fluid) && next.getAmount() < current.getAmount())) continue;
+            CausalityHooks.suppressing(() -> level.setBlock(pos, next.isEmpty() ? Blocks.AIR.defaultBlockState() : next.createLegacyBlock(), BLOCK_FLAGS));
+            changed++;
+            for (var direction : Direction.values()) if (region.contains(pos.relative(direction))) work.add(pos.relative(direction));
+        }
+        for (var pos : region) {
+            var remaining = level.getFluidState(pos);
+            if (!remaining.isEmpty() && remaining.getType().isSame(fluid)) level.scheduleTick(pos, remaining.getType(), flowing.getTickDelay(level));
+        }
+        return region.size() + changed;
     }
 
     /** Callers bracket this with storage checkpoints. */
@@ -231,7 +294,8 @@ final class WorldRollback {
             boolean changed;
             try {
                 var result = new boolean[1];
-                CausalityHooks.suppressing(() -> result[0] = insert ? insert(storage.slots(), template, count) : remove(storage.slots(), template, count));
+                CausalityHooks.suppressing(() -> result[0] = insert ? insert(storage.slots(), template, count, payload.slot())
+                        : remove(storage.slots(), template, count, payload.slot()));
                 changed = result[0];
             } finally {
                 StorageAudit.externalChange(level, storage.sessionPosition(), storage.identity(), false);
@@ -508,10 +572,18 @@ final class WorldRollback {
         };
     }
 
-    /** Plans the whole insertion before changing anything: identical stacks first, as vanilla merges, then empty slots. */
-    private static boolean insert(Slots slots, ItemStack template, int count) {
+    /**
+     * Plans the whole insertion before changing anything: the recorded slot of positional storage first (a chiseled
+     * bookshelf book goes back where the player put it), then identical stacks, as vanilla merges, then empty slots.
+     * A recorded slot taken over since falls back to the others.
+     */
+    private static boolean insert(Slots slots, ItemStack template, int count, Integer preferred) {
         var allotted = new int[slots.size()];
         int remaining = count;
+        if (preferred != null && preferred < slots.size() && slots.get(preferred).isEmpty() && slots.accepts(preferred, template)) {
+            allotted[preferred] = Math.min(remaining, slots.limit(preferred, template));
+            remaining -= allotted[preferred];
+        }
         for (int slot = 0; slot < slots.size() && remaining > 0; slot++) {
             var current = slots.get(slot);
             // A slot already holding the identical item takes it back even where vanilla forbids placement (furnace output).
@@ -520,7 +592,7 @@ final class WorldRollback {
             allotted[slot] = take; remaining -= take;
         }
         for (int slot = 0; slot < slots.size() && remaining > 0; slot++) {
-            if (!slots.get(slot).isEmpty() || !slots.accepts(slot, template)) continue;
+            if (allotted[slot] > 0 || !slots.get(slot).isEmpty() || !slots.accepts(slot, template)) continue;
             int take = Math.min(remaining, slots.limit(slot, template));
             allotted[slot] = take; remaining -= take;
         }
@@ -537,7 +609,16 @@ final class WorldRollback {
         return true;
     }
 
-    private static boolean remove(Slots slots, ItemStack template, int count) {
+    /**
+     * Takes from the last matching slots. Positional storage takes only from its recorded slot: an identical book in
+     * another slot is someone else's, so a mismatch is a retryable skip rather than a substitute.
+     */
+    private static boolean remove(Slots slots, ItemStack template, int count, Integer preferred) {
+        if (preferred != null) {
+            if (preferred >= slots.size()) return false;
+            var recorded = slots.get(preferred);
+            if (recorded.isEmpty() || !ItemStack.isSameItemSameComponents(recorded, template) || recorded.getCount() < count) return false;
+        }
         int available = 0;
         for (int slot = 0; slot < slots.size(); slot++) {
             var current = slots.get(slot);
@@ -547,7 +628,11 @@ final class WorldRollback {
         int remaining = count;
         var originals = new ItemStack[slots.size()];
         try {
-            for (int slot = slots.size() - 1; slot >= 0 && remaining > 0; slot--) {
+            var order = new ArrayList<Integer>();
+            if (preferred != null) order.add(preferred);
+            else for (int slot = slots.size() - 1; slot >= 0; slot--) order.add(slot);
+            for (int slot : order) {
+                if (remaining == 0) break;
                 var current = slots.get(slot);
                 if (current.isEmpty() || !ItemStack.isSameItemSameComponents(current, template)) continue;
                 int take = Math.min(remaining, current.getCount());

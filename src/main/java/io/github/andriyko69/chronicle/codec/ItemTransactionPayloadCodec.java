@@ -12,7 +12,7 @@ public final class ItemTransactionPayloadCodec {
         try {
             var bytes = new ByteArrayOutputStream();
             var output = new DataOutputStream(bytes);
-            output.writeInt(ItemTransactionPayload.VERSION); output.writeInt(payload.count());
+            output.writeInt(payload.version()); output.writeInt(payload.count());
             BinaryValues.text(output, payload.containerBlockId());
             output.writeBoolean(payload.customName() != null);
             if (payload.customName() != null) BinaryValues.text(output, payload.customName());
@@ -25,13 +25,14 @@ public final class ItemTransactionPayloadCodec {
             byte[] components = payload.componentBytes();
             output.writeInt(components == null ? 0 : components.length);
             if (components != null) output.write(components);
+            if (payload.slot() != null) output.writeInt(payload.slot());
             if (bytes.size() > MAX_BYTES) throw new IllegalArgumentException("Item payload too large");
             return bytes.toByteArray();
         } catch (IOException impossible) { throw new IllegalStateException(impossible); }
     }
     public ItemTransactionPayload decode(int version, byte[] bytes) {
         try {
-            if (version != ItemTransactionPayload.VERSION || bytes.length > MAX_BYTES)
+            if ((version != ItemTransactionPayload.VERSION && version != ItemTransactionPayload.SLOTTED_VERSION) || bytes.length > MAX_BYTES)
                 throw new IllegalArgumentException("Unsupported/oversized item payload");
             var input = ByteBuffer.wrap(bytes);
             if (input.getInt() != version) throw new IllegalArgumentException("Item payload version mismatch");
@@ -52,9 +53,10 @@ public final class ItemTransactionPayloadCodec {
             int damage = input.getInt();
             var status = ItemTransactionPayload.ComponentSnapshotStatus.values()[Byte.toUnsignedInt(input.get())];
             byte[] components = BinaryValues.bytes(input, ItemTransactionPayload.MAX_COMPONENT_BYTES);
+            Integer slot = version == ItemTransactionPayload.SLOTTED_VERSION ? input.getInt() : null;
             if (input.hasRemaining()) throw new IllegalArgumentException("Trailing item payload bytes");
             return new ItemTransactionPayload(count, container, name, enchantments, damage == 0 ? null : damage, status,
-                    components.length == 0 ? null : components);
+                    components.length == 0 ? null : components, slot);
         } catch (Exception failure) { throw new IllegalArgumentException("Malformed item payload", failure); }
     }
 }
