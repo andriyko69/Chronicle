@@ -25,10 +25,13 @@ public final class RollbackPlanner {
     /**
      * Rollback selects changes not yet rolled back, newest first; restore selects rolled-back changes, oldest first.
      * {@code quarantined} rows, and breaks whose spills are quarantined, are never planned: their world change may already
-     * have been applied without its state being recorded.
+     * have been applied without its state being recorded. Entity kills are forensic only and never selected.
      */
     public static RollbackPlan plan(StorageReader reader, LookupSpec spec, boolean restore, Set<EventId> quarantined) throws StorageFailure {
-        var found = reader.candidates(spec, restore, MAX_CHANGES + 1);
+        var reversible = spec.actions().stream().filter(RollbackPlanner::reversible).toList();
+        if (reversible.isEmpty()) return new RollbackPlan(restore, List.of(), 0);
+        var found = reader.candidates(new LookupSpec(spec.since(), spec.dimension(), spec.bounds(), spec.actors(), spec.targets(), reversible),
+                restore, MAX_CHANGES + 1).stream().filter(candidate -> reversible(candidate.event().envelope().eventType())).toList();
         if (found.size() > MAX_CHANGES) throw new Rejected("More than " + MAX_CHANGES + " matching changes; narrow the filters");
         var claimed = new HashSet<EventId>();
         var held = new HashSet<EventId>();
@@ -90,6 +93,13 @@ public final class RollbackPlanner {
     private static boolean sameActor(EventEnvelope a, EventEnvelope b) {
         return a.actorType().equals(b.actorType()) && a.actorId().equals(b.actorId()) && Objects.equals(a.actorUuid(), b.actorUuid())
                 && Objects.equals(a.rootActorUuid(), b.rootActorUuid());
+    }
+
+    static boolean reversible(String eventType) {
+        return switch (eventType) {
+            case "BLOCK_BREAK", "BLOCK_PLACE", "ITEM_TAKE", "ITEM_PUT" -> true;
+            default -> false;
+        };
     }
 
     static boolean block(AuditEvent event) {

@@ -80,13 +80,13 @@ class InspectorTest {
         var spec = LookupSpec.exact("minecraft:overworld", new LookupSpec.Center(10, -64, Integer.MAX_VALUE));
         assertEquals(Instant.EPOCH, spec.since());
         assertEquals(new LookupSpec.Bounds(10, 10, -64, -64, Integer.MAX_VALUE, Integer.MAX_VALUE), spec.bounds());
-        assertEquals(List.of("BLOCK_BREAK", "BLOCK_PLACE", "ITEM_TAKE", "ITEM_PUT"), spec.actions());
+        assertEquals(List.of("BLOCK_BREAK", "BLOCK_PLACE", "ITEM_TAKE", "ITEM_PUT", "ENTITY_KILL"), spec.actions());
         assertTrue(spec.actors().isEmpty() && spec.targets().isEmpty());
         assertThrows(NullPointerException.class, () -> LookupSpec.exact(null, new LookupSpec.Center(0, 0, 0)));
         var sql = LookupSql.page(spec, 2);
         assertTrue(sql.sql().contains("world_id = ? AND x = ? AND y = ? AND z = ?") && !sql.sql().contains("BETWEEN"));
         assertEquals(List.of(0L, 0L, 0, "minecraft:overworld", 10, -64, Integer.MAX_VALUE,
-                "BLOCK_BREAK", "BLOCK_PLACE", "ITEM_TAKE", "ITEM_PUT", LookupSpec.PAGE_SIZE + 1, LookupSpec.PAGE_SIZE), sql.parameters());
+                "BLOCK_BREAK", "BLOCK_PLACE", "ITEM_TAKE", "ITEM_PUT", "ENTITY_KILL", LookupSpec.PAGE_SIZE + 1, LookupSpec.PAGE_SIZE), sql.parameters());
         var sessions = new LookupSessions(CLOCK);
         sessions.put(ALICE.toString(), spec);
         assertEquals(spec, sessions.get(ALICE.toString()).orElseThrow(), "Inspector lookups page like /ch lookup");

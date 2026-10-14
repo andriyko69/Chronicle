@@ -26,6 +26,7 @@ public final class LookupFormatterGameTests {
         tests.statusDashboardColorsAllHealthStatesAndBacklogWithoutHidingFailures();
         tests.itemStatusesAndSanitizedNames();
         tests.causalRowsShowRootActorAndCopyItsUuid();
+        tests.killRowsUseTheKilledVerbAndKeepEntityMetadataInHover();
         tests.rolledBackRowsAreMarkedWhileOthersRenderUnchanged();
         tests.rollbackPreviewAndReportSummaries();
         helper.succeed();
@@ -102,6 +103,30 @@ public final class LookupFormatterGameTests {
         assertTrue(ChatEvidence.text(unnamed).contains("Caused by: unknown name"));
         var direct = row(block("BLOCK_BREAK", 0, "PLAYER", null, "minecraft:chest", BlockDeltaPayload.SnapshotStatus.NONE), null);
         assertFalse(direct.getString().contains("←"));
+    }
+    private void killRowsUseTheKilledVerbAndKeepEntityMetadataInHover() {
+        UUID root = UUID.fromString("33333333-3333-4333-8333-333333333333"), owner = UUID.fromString("44444444-4444-4444-8444-444444444444");
+        var envelope = new EventEnvelope("minecraft:overworld", 10, 64, 20, "ENTITY_KILL", "ENVIRONMENT", "#creeper", null, root, "Griefer", "minecraft:wolf");
+        var kill = new EntityKillPayload("minecraft:wolf", "Barnaby", owner, "Bob", "collar: red");
+        var row = row(new LookupRow(EventId.generate(), NOW.minusSeconds(12), envelope, null, null, BlockDeltaPayload.SnapshotStatus.NONE, null, false, kill),
+                "minecraft:overworld");
+        assertEquals("12s ago - #creeper (← Griefer) killed wolf \"Barnaby\" @ 10 64 20", row.getString());
+        color(node(row, "-"), ChatFormatting.RED);
+        color(node(row, "wolf \"Barnaby\""), ChatFormatting.AQUA);
+        color(node(row, " \"Barnaby\""), ChatFormatting.YELLOW);
+        String evidence = ChatEvidence.text(row);
+        for (String value : List.of("Entity: minecraft:wolf", "Name: Barnaby", "Owner: Bob (" + owner + ")", "Detail: collar: red", "Caused by: Griefer"))
+            assertTrue(evidence.contains(value), value + " in " + evidence);
+        var direct = row(new LookupRow(EventId.generate(), NOW.minusSeconds(12), new EventEnvelope("minecraft:overworld", 10, 64, 20, "ENTITY_KILL",
+                "PLAYER", "Andriyko69", root, null, "minecraft:cow"), null, null, BlockDeltaPayload.SnapshotStatus.NONE, null, false,
+                new EntityKillPayload("minecraft:cow", null, null, null, null)), "minecraft:overworld");
+        assertEquals("12s ago - Andriyko69 killed cow @ 10 64 20", direct.getString());
+        String plain = ChatEvidence.text(direct);
+        assertTrue(plain.contains("Name: none") && plain.contains("Owner: none") && plain.contains("Detail: none"), plain);
+        var offline = row(new LookupRow(EventId.generate(), NOW, envelope, null, null, BlockDeltaPayload.SnapshotStatus.NONE, null, false,
+                new EntityKillPayload("minecraft:wolf", "§cRed\nName", owner, null, null)), null);
+        assertTrue(ChatEvidence.text(offline).contains("Owner: unknown name (" + owner + ")"), ChatEvidence.text(offline));
+        assertTrue(offline.getString().contains("killed wolf \" cRed Name\""), "Formatting codes and newlines sanitized: " + offline.getString());
     }
     private void agesDimensionsNamesAndAllNbtStatuses() {
         long[] ages = {-1, 0, 59, 60, 180, 3599, 3600, 86399, 86400, 259200};

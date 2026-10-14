@@ -13,6 +13,7 @@ import io.github.andriyko69.chronicle.runtime.InfrastructureConfig;
 import io.github.andriyko69.chronicle.listener.PlayerBlockListener;
 import io.github.andriyko69.chronicle.container.ContainerSessionManager;
 import io.github.andriyko69.chronicle.container.StorageAudit;
+import io.github.andriyko69.chronicle.causality.EntityKillCapture;
 import io.github.andriyko69.chronicle.causality.EnvironmentAudit;
 import io.github.andriyko69.chronicle.command.ChronicleCommands;
 import io.github.andriyko69.chronicle.inspect.InspectorListener;
@@ -43,6 +44,7 @@ public final class Chronicle {
         storage.register();
         environment = new EnvironmentAudit(() -> runtime, ChronicleClock.system(), storage);
         environment.register();
+        EntityKillCapture.register();
         rollbacks.register();
         commands = new ChronicleCommands(() -> runtime, ChronicleClock.system(), inspectors, rollbacks);
         NeoForge.EVENT_BUS.addListener(commands::onRegister);

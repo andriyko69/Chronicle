@@ -82,7 +82,17 @@ public final class ChronicleFormatter {
                 .append(text(" ", GRAY)).append(actor);
         if (e.actorType().equals("FAKE_PLAYER")) line.append(text(" [Fake]", GOLD));
         String status = row.rolledBack() ? "\nStatus: Rolled back" : "";
-        if (row.item() == null) {
+        if (row.kill() != null) {
+            var kill = row.kill();
+            line.append(struck(text(" killed ", GRAY), row));
+            var target = struck(text(shortId(e.targetId()), AQUA), row);
+            if (kill.customName() != null) target.append(text(" \"" + compactName(kill.customName()) + "\"", YELLOW).withStyle(ITALIC));
+            String owner = kill.ownerUuid() == null ? "none"
+                    : (kill.ownerName() == null ? "unknown name" : safeName(kill.ownerName())) + " (" + kill.ownerUuid() + ")";
+            line.append(hover(target, "Entity: " + e.targetId()
+                    + "\nName: " + (kill.customName() == null ? "none" : safeName(kill.customName()))
+                    + "\nOwner: " + owner + "\nDetail: " + (kill.detail() == null ? "none" : safeName(kill.detail())) + status));
+        } else if (row.item() == null) {
             line.append(struck(text(added ? " placed " : " broke ", GRAY), row));
             var target = struck(text(shortId(e.targetId()), AQUA), row);
             if (row.nbtStatus() != BlockDeltaPayload.SnapshotStatus.NONE) {

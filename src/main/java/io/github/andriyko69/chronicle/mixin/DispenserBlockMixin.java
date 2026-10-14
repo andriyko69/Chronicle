@@ -28,7 +28,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /**
  * Observation only: dispensed buckets pour and scoop with no player and post no NeoForge event. The trigger hook marks
  * the neighbor update that schedules a dispense, when a recent player redstone activation can still be traced; the
- * pre-dispense hook credits whoever loaded the bucket through a still-open menu.
+ * pre-dispense hook credits whoever loaded the bucket through a still-open menu. Every dispense is bracketed so the
+ * ownerless projectiles and TNT it spawns inherit the dispenser's root.
  */
 @Mixin(DispenserBlock.class)
 abstract class DispenserBlockMixin {
@@ -48,7 +49,9 @@ abstract class DispenserBlockMixin {
             before.set(BlockCapture.at(source.level(), source.pos().relative(source.state().getValue(DispenserBlock.FACING))));
         pickup.set(item instanceof BucketItem bucket && bucket.content == Fluids.EMPTY);
         if (before.get() != null) CausalityHooks.dispensing(source.level(), source.pos());
-        return original.call(behavior, source, stack);
+        CausalityHooks.launching(source.level(), source.pos());
+        try { return original.call(behavior, source, stack); }
+        finally { CausalityHooks.launched(source.level()); }
     }
 
     // Vanilla installs the returned remainder (the filled or emptied bucket) only after dispense returns.

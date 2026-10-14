@@ -85,7 +85,8 @@ public final class LookupParser {
                     case "container", "item" -> List.of("ITEM_TAKE", "ITEM_PUT");
                     case "-item", "take", "-container" -> List.of("ITEM_TAKE");
                     case "+item", "put", "+container" -> List.of("ITEM_PUT");
-                    default -> throw syntax("Action must be block/break/place or container/item/take/put (also +/-block, +/-item, +/-container)");
+                    case "kill", "killed", "entity_kill" -> List.of("ENTITY_KILL");
+                    default -> throw syntax("Action must be block/break/place, container/item/take/put or kill (also +/-block, +/-item, +/-container)");
                 };
                 case "dimension" -> dimension = resource(value);
                 case "at" -> {

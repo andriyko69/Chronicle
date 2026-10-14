@@ -2,6 +2,7 @@
 package io.github.andriyko69.chronicle.event;
 
 import io.github.andriyko69.chronicle.codec.BlockDeltaPayloadCodec;
+import io.github.andriyko69.chronicle.codec.EntityKillPayloadCodec;
 import io.github.andriyko69.chronicle.codec.ItemTransactionPayloadCodec;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -10,6 +11,7 @@ import java.util.Objects;
 
 public record AuditEvent(EventId id, Instant occurredAt, EventEnvelope envelope, int payloadVersion, byte[] payload) {
     public static final int MAX_VALUE_BYTES = 4096;
+    public static final String ENTITY_KILL = "ENTITY_KILL";
     public AuditEvent {
         Objects.requireNonNull(id); Objects.requireNonNull(occurredAt); Objects.requireNonNull(payload);
         payload = payload.clone();
@@ -20,6 +22,7 @@ public record AuditEvent(EventId id, Instant occurredAt, EventEnvelope envelope,
             switch (envelope.eventType()) {
                 case "BLOCK_BREAK", "BLOCK_PLACE" -> new BlockDeltaPayloadCodec().decode(payloadVersion, payload);
                 case "ITEM_TAKE", "ITEM_PUT" -> new ItemTransactionPayloadCodec().decode(payloadVersion, payload);
+                case ENTITY_KILL -> new EntityKillPayloadCodec().decode(payloadVersion, payload);
                 default -> throw new IllegalArgumentException("Unsupported event type " + envelope.eventType());
             }
         }
@@ -35,6 +38,10 @@ public record AuditEvent(EventId id, Instant occurredAt, EventEnvelope envelope,
         if (!envelope.eventType().equals("ITEM_TAKE") && !envelope.eventType().equals("ITEM_PUT"))
             throw new IllegalArgumentException("Expected item event type");
         return new AuditEvent(id, occurredAt, envelope, transaction.version(), new ItemTransactionPayloadCodec().encode(transaction));
+    }
+    public static AuditEvent kill(EventId id, Instant occurredAt, EventEnvelope envelope, EntityKillPayload kill) {
+        if (!envelope.eventType().equals(ENTITY_KILL)) throw new IllegalArgumentException("Expected entity kill event type");
+        return new AuditEvent(id, occurredAt, envelope, EntityKillPayload.VERSION, new EntityKillPayloadCodec().encode(kill));
     }
     private static byte[] legacyBytes(String value) {
         Objects.requireNonNull(value);

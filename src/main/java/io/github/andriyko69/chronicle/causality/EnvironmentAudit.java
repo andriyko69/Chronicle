@@ -23,8 +23,11 @@ import net.minecraft.tags.DamageTypeTags;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.damagesource.DamageTypes;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.OwnableEntity;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.decoration.ItemFrame;
 import net.minecraft.world.entity.item.PrimedTnt;
@@ -39,6 +42,7 @@ import net.minecraft.world.level.block.entity.DispenserBlockEntity;
 import net.minecraft.world.level.block.entity.DropperBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.material.FlowingFluid;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
@@ -46,6 +50,9 @@ import net.neoforged.bus.api.EventPriority;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
 import net.neoforged.neoforge.event.entity.ProjectileImpactEvent;
+import net.neoforged.neoforge.event.entity.living.LivingChangeTargetEvent;
+import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
+import net.neoforged.neoforge.event.entity.living.LivingIncomingDamageEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.ExplosionEvent;
@@ -54,8 +61,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Environmental block destruction (explosions, fire burnout, projectiles) attributed to its direct source and, when one
- * can be traced, to the responsible player as root actor. All causal state lives on the server thread; only detached
+ * Environmental block destruction (explosions, fire burnout, projectiles) and audited entity deaths attributed to their
+ * direct source and, when one can be traced, to the responsible player as root actor. All causal state lives on the server thread; only detached
  * envelopes and payloads are submitted.
  *
  * <p>Explosion and projectile removals are captured at their pre-action hooks and emitted only once the block at that
@@ -81,6 +88,12 @@ public final class EnvironmentAudit {
     public static final double ACTIVATION_REACH = 32.0;
     public static final int ACTIVATION_TICKS = 100;
     static final int MAX_ACTIVATIONS = 256;
+    /** Burning outlasts contact by at most the lava's fifteen seconds; a minute covers lag without keeping stale fires. */
+    static final Duration IGNITION_TTL = Duration.ofMinutes(1);
+    /** Larger bounding boxes (dragons, ghasts) resolve fire contact at their own position only. */
+    static final int MAX_TOUCHED = 27;
+    /** Upstream lava positions walked to find a flow's sources; nether flows reach seven blocks plus falls. */
+    static final int MAX_FLOW = 64;
 
     private record Position(ServerLevel level, BlockPos pos) {}
     private record PendingBreak(ServerLevel level, BlockPos pos, BlockState state, BlockStateSnapshot before, SnapshotNbt nbt,
@@ -96,6 +109,8 @@ public final class EnvironmentAudit {
         boolean effective() { return before == null || level.getBlockState(pos) != before; }
     }
     private record Priming(ServerLevel level, CausalActor root, Priming outer) {}
+    private record Blast(ServerLevel level, Explosion explosion, AuditActor actor) {}
+    private record Launch(ServerLevel level, CausalActor root, Launch outer) {}
 
     private final Supplier<ChronicleRuntime> runtime;
     private final ChronicleClock clock;
@@ -106,6 +121,19 @@ public final class EnvironmentAudit {
     private final CausalMemory<Position> dispenserOwners;
     /** Root of each dispenser's latest trigger; replaced or cleared by the next one, so it governs the dispense it scheduled. */
     private final CausalMemory<Position> dispenserTriggers;
+    /** The player each creeper last targeted: it may lose its target before it detonates. */
+    private final CausalMemory<UUID> aggro;
+    /**
+     * The attributed fire or lava each audited entity last touched, for burning deaths after it walks out. Any later
+     * ignition (a flame arrow, fire aspect, unattributed fire) starts a new burning episode and forgets it.
+     */
+    private final CausalMemory<UUID> ignitions;
+    /** The latest explosion; vanilla hurts its entities synchronously right after Detonate, so it owns those deaths. */
+    private Blast blast;
+    /** Dispenses in progress: unowned projectiles and TNT they spawn inherit the dispenser's root. */
+    private Launch launch;
+    /** Victims recorded this tick; {@code die} posts its event before vanilla's own already-dead guard. */
+    private final Set<UUID> killed = new HashSet<>();
     private final Map<Position, PendingBreak> pending = new LinkedHashMap<>();
     /** Air positions an attributed explosion may set alight while finalizing; valid only within that tick. */
     private final Map<Position, CausalActor> explosionFire = new HashMap<>();
@@ -127,6 +155,8 @@ public final class EnvironmentAudit {
         entities = new CausalMemory<>(clock, ENTITY_CAPACITY, ENTITY_TTL);
         dispenserOwners = new CausalMemory<>(clock, ENTITY_CAPACITY, ENTITY_TTL);
         dispenserTriggers = new CausalMemory<>(clock, ENTITY_CAPACITY, ENTITY_TTL);
+        aggro = new CausalMemory<>(clock, ENTITY_CAPACITY, ENTITY_TTL);
+        ignitions = new CausalMemory<>(clock, ENTITY_CAPACITY, IGNITION_TTL);
     }
 
     public void register() {
@@ -138,6 +168,9 @@ public final class EnvironmentAudit {
         NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::clicked);
         NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::broken);
         NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::joined);
+        NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::targeted);
+        NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::burned);
+        NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::died);
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Pre event) -> settle(event.getServer()));
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> settle(event.getServer()));
         storage.onRecorded(this::recorded);
@@ -152,6 +185,7 @@ public final class EnvironmentAudit {
             var root = explosionRoot(level, explosion, direct);
             var actor = AuditActor.environment(direct == null ? EXPLOSION : AuditActor.entityId(direct), root);
             confirmFinished();
+            blast = new Blast(level, explosion, actor);
             if (root != null) explosionRoots.put(explosion, root);
             // KEEP explosions (mobGriefing off, wind charges) list blocks they will not remove; only entities are affected.
             var blocks = explosion.interactsWithBlocks() ? event.getAffectedBlocks() : List.<BlockPos>of();
@@ -177,6 +211,10 @@ public final class EnvironmentAudit {
         for (var entity : new Entity[]{direct, indirect}) {
             if (entity instanceof Mob mob && mob.getTarget() instanceof Player player) return root(player);
         }
+        if (direct instanceof Creeper creeper) {
+            var aggroed = aggro.get(creeper.getUUID());
+            if (aggroed != null) return aggroed;
+        }
         var trigger = click;
         if (direct == null && trigger != null && trigger.level() == level && trigger.tick() == tick(level)
                 && trigger.pos().getCenter().distanceTo(explosion.center()) <= CLICK_REACH) return trigger.actor();
@@ -189,7 +227,8 @@ public final class EnvironmentAudit {
         var snapshots = event instanceof BlockEvent.EntityMultiPlaceEvent multi ? multi.getReplacedBlockSnapshots() : List.of(event.getBlockSnapshot());
         for (var snapshot : snapshots) {
             var state = level.getBlockState(snapshot.getPos());
-            if (state.getBlock() instanceof BaseFireBlock) fire.seed(dimension(level), snapshot.getPos().asLong(), root(player), tick(level));
+            if (state.getBlock() instanceof BaseFireBlock || state.getBlock() instanceof CampfireBlock && state.getValue(CampfireBlock.LIT))
+                fire.seed(dimension(level), snapshot.getPos().asLong(), root(player), tick(level));
             if (state.getBlock() instanceof DispenserBlock)
                 dispenserOwners.put(new Position(level, snapshot.getPos().immutable()), root(player), tick(level));
             activated(level, snapshot.getPos(), state, player, false);
@@ -312,14 +351,27 @@ public final class EnvironmentAudit {
         var level = before.level();
         if (!level.getServer().isSameThread()) return;
         storage.automating(level, pos, false);
-        var dispenser = new Position(level, pos.immutable());
-        var root = dispenserTriggers.get(dispenser);
-        if (root == null) root = dispenserOwners.get(dispenser);
+        var root = dispenserRoot(new Position(level, pos.immutable()));
         if (!pickup && level.getBlockState(before.pos()) != before.state() && level.getFluidState(before.pos()).is(FluidTags.LAVA)) {
             if (root != null) fire.seed(dimension(level), before.pos().asLong(), root, tick(level));
             else fire.unattributed(dimension(level), before.pos().asLong(), tick(level));
         }
         bucketChanged(AuditActor.environment(DISPENSER, root), before, pickup ? "BLOCK_BREAK" : "BLOCK_PLACE");
+    }
+
+    private CausalActor dispenserRoot(Position dispenser) {
+        var root = dispenserTriggers.get(dispenser);
+        return root != null ? root : dispenserOwners.get(dispenser);
+    }
+
+    void launching(Level level, BlockPos pos) {
+        if (level instanceof ServerLevel server && server.getServer().isSameThread())
+            launch = new Launch(server, dispenserRoot(new Position(server, pos.immutable())), launch);
+    }
+
+    void launched(Level level) {
+        var current = launch;
+        if (current != null && current.level() == level) launch = current.outer();
     }
 
     /**
@@ -389,7 +441,8 @@ public final class EnvironmentAudit {
     private AuditActor projectileActor(Projectile projectile) {
         var owner = projectile.getOwner();
         if (owner instanceof Player player) return AuditActor.player(player);
-        CausalActor root = owner == null ? null : entities.get(owner.getUUID());
+        // An ownerless projectile may carry its dispenser's root.
+        CausalActor root = entities.get((owner == null ? projectile : owner).getUUID());
         if (root == null && owner instanceof Mob mob && mob.getTarget() instanceof Player player) root = root(player);
         return AuditActor.environment(AuditActor.entityId(projectile), root);
     }
@@ -415,14 +468,187 @@ public final class EnvironmentAudit {
      * from proximity.
      */
     public void joined(EntityJoinLevelEvent event) {
-        if (event.isCanceled() || !(event.getEntity() instanceof PrimedTnt tnt) || tnt.getOwner() instanceof Player
-                || !(event.getLevel() instanceof ServerLevel level) || !level.getServer().isSameThread()) return;
+        if (event.isCanceled() || !(event.getLevel() instanceof ServerLevel level) || !level.getServer().isSameThread()) return;
+        var entity = event.getEntity();
+        var dispensing = launch;
+        if (dispensing != null && dispensing.level() == level && dispensing.root() != null
+                && (entity instanceof Projectile projectile && projectile.getOwner() == null || entity instanceof PrimedTnt primed && primed.getOwner() == null)) {
+            entities.put(entity.getUUID(), dispensing.root(), tick(level));
+            return;
+        }
+        if (!(entity instanceof PrimedTnt tnt) || tnt.getOwner() instanceof Player) return;
         CausalActor root = null;
         var burn = burning;
         var chain = priming;
         if (chain != null && chain.level() == level) root = chain.root();
         else if (burn != null && burn.level() == level && burn.pos().getCenter().distanceTo(tnt.position()) <= 1.5) root = rootOf(burn.actor());
         if (root != null) entities.put(tnt.getUUID(), root, tick(level));
+    }
+
+    /**
+     * A creeper that loses its player target mid-fuse keeps swelling and still explodes, so that player stays its root.
+     * Retargeting anything else, or losing the target before swelling, ends the player's responsibility.
+     */
+    public void targeted(LivingChangeTargetEvent event) {
+        if (event.isCanceled() || !(event.getEntity() instanceof Creeper creeper) || !(creeper.level() instanceof ServerLevel level)
+                || !level.getServer().isSameThread()) return;
+        var target = event.getNewAboutToBeSetTarget();
+        if (target instanceof Player player) aggro.put(creeper.getUUID(), root(player), tick(level));
+        else if (target != null || creeper.getSwellDir() <= 0) aggro.remove(creeper.getUUID());
+    }
+
+    /** Remembers the attributed fire or lava an audited entity touches; untraceable contact replaces an older root. */
+    public void burned(LivingIncomingDamageEvent event) {
+        var victim = event.getEntity();
+        if (event.isCanceled() || !contact(event.getSource()) || !(victim.level() instanceof ServerLevel level)
+                || !level.getServer().isSameThread() || EntityKillCapture.scope(victim) == EntityKillCapture.Scope.NEVER) return;
+        try {
+            var root = touchedRoot(level, victim, Hazard.of(event.getSource()));
+            if (root != null) ignitions.put(victim.getUUID(), root, tick(level));
+            else ignitions.remove(victim.getUUID());
+        } catch (RuntimeException failure) { captureFailed(failure); }
+    }
+
+    public void died(LivingDeathEvent event) {
+        var victim = event.getEntity();
+        if (event.isCanceled() || !(victim.level() instanceof ServerLevel level) || !owned(level)) return;
+        var scope = EntityKillCapture.scope(victim);
+        if (scope == EntityKillCapture.Scope.NEVER || !killed.add(victim.getUUID())) return;
+        try {
+            var actor = killActor(level, victim, event.getSource());
+            if (scope == EntityKillCapture.Scope.IF_PLAYER_CAUSED && actor.uuid() == null && actor.rootUuid() == null) return;
+            var payload = EntityKillCapture.capture(level, victim);
+            var pos = victim.blockPosition();
+            var envelope = new EventEnvelope(dimension(level), pos.getX(), pos.getY(), pos.getZ(), AuditEvent.ENTITY_KILL,
+                    actor.type(), actor.id(), actor.uuid(), actor.rootUuid(), actor.rootName(), payload.entityTypeId());
+            var result = runtime.get().submit(AuditEvent.kill(EventId.generate(), clock.now(), envelope, payload));
+            if (result.status() != Submission.Status.ACCEPTED)
+                LOG.warn("Chronicle {} kill of {} at {} was not admitted: {}", actor.id(), payload.entityTypeId(), pos, result.status());
+        } catch (RuntimeException failure) { captureFailed(failure); }
+        finally { ignitions.remove(victim.getUUID()); }
+    }
+
+    /**
+     * Players and their projectiles are credited as for armor stands; tamed animals credit their owner. Deaths with no
+     * source entity resolve fire and lava roots, then vanilla's kill credit (a player's hit within 100 ticks).
+     */
+    private AuditActor killActor(ServerLevel level, LivingEntity victim, DamageSource source) {
+        var direct = source.getDirectEntity();
+        boolean explosion = source.is(DamageTypeTags.IS_EXPLOSION);
+        var latest = blast;
+        if (explosion && latest != null && latest.level() == level && latest.explosion().getDirectSourceEntity() == direct) return latest.actor();
+        if (direct instanceof Projectile || source.getEntity() instanceof Player) return damageActor(level, victim, source);
+        if (direct != null) {
+            var remembered = entities.get(direct.getUUID());
+            if (remembered != null) return AuditActor.environment(AuditActor.entityId(direct), remembered);
+            if (direct instanceof OwnableEntity pet && pet.getOwnerUUID() != null)
+                return new AuditActor(AuditActor.ENVIRONMENT, AuditActor.entityId(direct), null, pet.getOwnerUUID(),
+                        EntityKillCapture.playerName(level, pet.getOwnerUUID()));
+            return AuditActor.environment(AuditActor.entityId(direct), null);
+        }
+        String id = explosion ? EXPLOSION : source.is(DamageTypes.IN_FIRE) || source.is(DamageTypes.ON_FIRE) ? FIRE
+                : source.typeHolder().unwrapKey().map(key -> "#" + key.location().getPath()).orElse("#unknown");
+        var root = burnRoot(level, victim, source);
+        if (root == null && !explosion && victim.getKillCredit() instanceof Player player) root = root(player);
+        return AuditActor.environment(id, root);
+    }
+
+    private static boolean contact(DamageSource source) { return Hazard.of(source) != null && !source.is(DamageTypes.ON_FIRE); }
+
+    /** What can explain a burn: contact damage only comes from its own block, burning from anything that ignites. */
+    private enum Hazard {
+        FIRE, LIT_CAMPFIRE, LAVA, IGNITER;
+        static Hazard of(DamageSource source) {
+            return source.is(DamageTypes.IN_FIRE) ? FIRE : source.is(DamageTypes.CAMPFIRE) ? LIT_CAMPFIRE : source.is(DamageTypes.LAVA) ? LAVA
+                    : source.is(DamageTypes.ON_FIRE) ? IGNITER : null;
+        }
+        boolean lava() { return this == LAVA || this == IGNITER; }
+        /** Extinguished fires and campfires are not forgotten eagerly; only a hazard still present can explain this damage. */
+        boolean at(ServerLevel level, BlockPos pos) {
+            var state = level.getBlockState(pos);
+            boolean fire = state.getBlock() instanceof BaseFireBlock;
+            return switch (this) {
+                case FIRE -> fire;
+                case LIT_CAMPFIRE -> state.getBlock() instanceof CampfireBlock && state.getValue(CampfireBlock.LIT);
+                case LAVA -> level.getFluidState(pos).is(FluidTags.LAVA);
+                case IGNITER -> fire || level.getFluidState(pos).is(FluidTags.LAVA);
+            };
+        }
+    }
+
+    private CausalActor burnRoot(ServerLevel level, LivingEntity victim, DamageSource source) {
+        var hazard = Hazard.of(source);
+        if (hazard == null) return null;
+        if (hazard == Hazard.IGNITER) {
+            var lit = ignitions.get(victim.getUUID());
+            return lit != null ? lit : touchedRoot(level, victim, hazard);
+        }
+        var root = touchedRoot(level, victim, hazard);
+        return root != null ? root : ignitions.get(victim.getUUID());
+    }
+
+    void igniting(Entity entity) {
+        if (entity instanceof LivingEntity && entity.level() instanceof ServerLevel level && level.getServer().isSameThread())
+            ignitions.forgetUnlessWrittenAt(entity.getUUID(), tick(level));
+    }
+
+    /**
+     * The root of the attributed {@code hazard} present in blocks the victim's bounding box overlaps, or of the lava
+     * sources feeding flowing lava it touches. Touched hazards with different roots leave the cause unknown.
+     */
+    private CausalActor touchedRoot(ServerLevel level, LivingEntity victim, Hazard hazard) {
+        String dimension = dimension(level);
+        var box = victim.getBoundingBox().deflate(1.0E-3);
+        var min = BlockPos.containing(box.minX, box.minY, box.minZ);
+        var max = BlockPos.containing(box.maxX, box.maxY, box.maxZ);
+        long blocks = (long)(max.getX() - min.getX() + 1) * (max.getY() - min.getY() + 1) * (max.getZ() - min.getZ() + 1);
+        Iterable<BlockPos> touched = blocks > MAX_TOUCHED ? List.of(victim.blockPosition()) : BlockPos.betweenClosed(min, max);
+        CausalActor found = null;
+        for (var pos : touched) {
+            var root = fire.rootAt(dimension, pos.asLong());
+            if (root == null || !hazard.at(level, pos)) {
+                var fluid = level.getFluidState(pos);
+                root = hazard.lava() && fluid.is(FluidTags.LAVA) && !fluid.isSource() ? flowRoot(level, pos) : null;
+            }
+            if (root == null) continue;
+            if (found != null && !found.uuid().equals(root.uuid())) return null;
+            found = root;
+        }
+        return found;
+    }
+
+    /**
+     * Flowing lava is untracked, so its root is its sources': walking upstream (falling lava from above, level lava from a
+     * fuller neighbour) only through loaded lava blocks reaches exactly the sources that can feed {@code start}. Any
+     * unattributed source, disagreeing roots, or a flow too large to walk leaves the cause unknown.
+     */
+    private CausalActor flowRoot(ServerLevel level, BlockPos start) {
+        String dimension = dimension(level);
+        var queue = new ArrayDeque<BlockPos>();
+        var seen = new HashSet<BlockPos>();
+        queue.add(start.immutable()); seen.add(start.immutable());
+        CausalActor found = null;
+        while (!queue.isEmpty()) {
+            var pos = queue.poll();
+            var fluid = level.getFluidState(pos);
+            if (fluid.isSource()) {
+                var root = fire.rootAt(dimension, pos.asLong());
+                if (root == null || found != null && !found.uuid().equals(root.uuid())) return null;
+                found = root;
+                continue;
+            }
+            var feeders = fluid.getValue(FlowingFluid.FALLING) ? List.of(pos.above())
+                    : Direction.Plane.HORIZONTAL.stream().map(pos::relative).toList();
+            for (var feeder : feeders) {
+                if (seen.contains(feeder)) continue;
+                if (!level.isLoaded(feeder)) return null;
+                var upstream = level.getFluidState(feeder);
+                if (!upstream.is(FluidTags.LAVA) || !fluid.getValue(FlowingFluid.FALLING) && upstream.getAmount() <= fluid.getAmount()) continue;
+                if (seen.size() >= MAX_FLOW) return null;
+                seen.add(feeder); queue.add(feeder);
+            }
+        }
+        return found;
     }
 
     void chainPriming(Level level, Explosion explosion) {
@@ -483,7 +709,8 @@ public final class EnvironmentAudit {
     private void settle(MinecraftServer server) {
         if (!server.isSameThread()) return;
         // Tick-scoped context; a fire tick or burn that threw before its exit hook must not leak into later placements.
-        fireTick = null; burning = null; click = null; priming = null; contact = null;
+        fireTick = null; burning = null; click = null; priming = null; contact = null; blast = null; launch = null;
+        killed.clear();
         explosionFire.clear();
         explosionRoots.clear();
         if (pending.isEmpty()) return;
@@ -541,12 +768,15 @@ public final class EnvironmentAudit {
         entities.clear();
         dispenserOwners.clear();
         dispenserTriggers.clear();
+        aggro.clear();
+        ignitions.clear();
         activations.clear();
     }
 
     public int trackedCauses(MinecraftServer server) {
         if (!server.isSameThread()) throw new IllegalStateException("Environment audit accessed off server thread");
-        return fire.size() + entities.size() + dispenserOwners.size() + dispenserTriggers.size() + activations.size();
+        return fire.size() + entities.size() + dispenserOwners.size() + dispenserTriggers.size() + aggro.size() + ignitions.size()
+                + activations.size();
     }
 
     private CausalActor root(Player player) { return new CausalActor(player.getUUID(), player.getGameProfile().getName(), clock.now()); }

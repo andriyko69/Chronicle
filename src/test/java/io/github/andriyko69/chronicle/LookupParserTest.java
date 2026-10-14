@@ -15,7 +15,7 @@ class LookupParserTest {
     @Test void defaultsAndCompoundDurationsAreExact() {
         var defaults = parser.parse("", PLAYER);
         assertEquals(NOW.minus(Duration.ofHours(24)), defaults.since());
-        assertEquals(List.of("BLOCK_BREAK", "BLOCK_PLACE", "ITEM_TAKE", "ITEM_PUT"), defaults.actions());
+        assertEquals(List.of("BLOCK_BREAK", "BLOCK_PLACE", "ITEM_TAKE", "ITEM_PUT", "ENTITY_KILL"), defaults.actions());
         assertEquals(new LookupSpec.Bounds(-4, 6, 59, 69, -6, 4), defaults.bounds());
         for (var entry : Map.of("1s", 1L, "2m", 120L, "3h", 10800L, "4d", 345600L,
                 "2w", 1209600L, "1h30m", 5400L, "1w2d3h4m5s", 788645L).entrySet())
