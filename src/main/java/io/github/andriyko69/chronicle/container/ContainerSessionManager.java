@@ -5,9 +5,12 @@ import io.github.andriyko69.chronicle.event.*;
 import io.github.andriyko69.chronicle.ingest.Submission;
 import io.github.andriyko69.chronicle.listener.PlayerActor;
 import io.github.andriyko69.chronicle.runtime.ChronicleRuntime;
+import java.time.Instant;
 import java.util.*;
 import java.util.function.Supplier;
+import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.neoforged.bus.api.EventPriority;
@@ -24,6 +27,7 @@ public final class ContainerSessionManager {
     private final Map<UUID, Session> sessions = new HashMap<>();
     private final Supplier<ChronicleRuntime> runtime;
     private final ChronicleClock clock;
+    private java.util.function.BiConsumer<ServerLevel, BlockPos> beforeFlush = (level, position) -> {};
     public ContainerSessionManager(Supplier<ChronicleRuntime> runtime, ChronicleClock clock) {
         this.runtime = runtime; this.clock = clock;
     }
@@ -57,7 +61,15 @@ public final class ContainerSessionManager {
     private void finish(net.minecraft.world.entity.Entity entity) {
         if (entity instanceof ServerPlayer player && player.serverLevel().getServer().isSameThread()) flush(player.getUUID());
     }
+    public void beforeFlush(java.util.function.BiConsumer<ServerLevel, BlockPos> resolver) { beforeFlush = Objects.requireNonNull(resolver); }
     private void flush(UUID playerId) {
+        var pending = sessions.get(playerId);
+        if (pending == null) return;
+        // A viewer can close a menu (e.g. invalid after an explosion) before the removal is settled at the tick boundary.
+        for (var baseline : pending.baselines) {
+            try { beforeFlush.accept(baseline.container.level(), baseline.container.position()); }
+            catch (RuntimeException failure) { LOG.warn("Chronicle failed to resolve storage removal before flushing {}", playerId, failure); }
+        }
         var session = sessions.remove(playerId);
         if (session == null) return;
         var destination = runtime.get();
@@ -68,16 +80,48 @@ public final class ContainerSessionManager {
         for (var baseline : session.baselines) {
             try {
                 var container = baseline.container;
-                var deltas = ContainerNetDiff.between(baseline.items, container.snapshot());
-                var time = clock.now();
-                for (var delta : deltas) {
-                    var pos = container.position(); var actor = session.actor;
-                    var envelope = new EventEnvelope(container.level().dimension().location().toString(), pos.getX(), pos.getY(), pos.getZ(),
-                            delta.eventType(), actor.type(), actor.name(), actor.uuid(), null, delta.itemId());
-                    var result = destination.submit(AuditEvent.item(EventId.generate(), time, envelope, delta.payload()));
-                    if (result.status() != Submission.Status.ACCEPTED) LOG.warn("Chronicle container transaction was not admitted for {}: {}", playerId, result.status());
-                }
+                var actor = session.actor;
+                submit(destination, container.level(), container.position(), actor.type(), actor.name(), actor.uuid(), null,
+                        ContainerNetDiff.between(baseline.items, container.snapshot()), clock.now());
             } catch (RuntimeException failure) { LOG.warn("Chronicle failed to flush container audit session for {}", playerId, failure); }
+        }
+    }
+    static void submit(ChronicleRuntime destination, ServerLevel level, BlockPos pos, String actorType, String actorName,
+            UUID actorUuid, UUID rootActorUuid, List<ContainerNetDiff.Delta> deltas, Instant time) {
+        for (var delta : deltas) {
+            var envelope = new EventEnvelope(level.dimension().location().toString(), pos.getX(), pos.getY(), pos.getZ(),
+                    delta.eventType(), actorType, actorName, actorUuid, rootActorUuid, delta.itemId());
+            var result = destination.submit(AuditEvent.item(EventId.generate(), time, envelope, delta.payload()));
+            if (result.status() != Submission.Status.ACCEPTED)
+                LOG.warn("Chronicle item transaction at {} was not admitted for {}: {}", pos, actorName, result.status());
+        }
+    }
+    /**
+     * Removal audit owns contents that leave with a broken block. Before removal, viewers are credited with their changes
+     * so far ({@code record}); after confirmed removal they are rebaselined without rows, so a viewer is not blamed for the spill.
+     */
+    public void checkpoint(ServerLevel level, BlockPos position, boolean record) {
+        if (!level.getServer().isSameThread()) throw new IllegalStateException("Container checkpoint off server thread");
+        var destination = runtime.get();
+        for (var entry : sessions.entrySet()) {
+            var session = entry.getValue();
+            var baselines = new ArrayList<Baseline>(session.baselines.size());
+            boolean touched = false;
+            for (var baseline : session.baselines) {
+                var container = baseline.container;
+                if (container.level() != level || !container.position().equals(position)) { baselines.add(baseline); continue; }
+                touched = true;
+                try {
+                    var current = container.snapshot();
+                    if (record && destination != null) submit(destination, level, position, session.actor.type(), session.actor.name(),
+                            session.actor.uuid(), null, ContainerNetDiff.between(baseline.items, current), clock.now());
+                    baselines.add(new Baseline(container, current));
+                } catch (RuntimeException failure) {
+                    LOG.warn("Chronicle failed to checkpoint container audit session for {}", entry.getKey(), failure);
+                    baselines.add(baseline);
+                }
+            }
+            if (touched) entry.setValue(new Session(session.menu, session.actor, List.copyOf(baselines)));
         }
     }
     public void stop(MinecraftServer server) {

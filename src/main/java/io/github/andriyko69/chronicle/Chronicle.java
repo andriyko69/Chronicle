@@ -12,6 +12,7 @@ import io.github.andriyko69.chronicle.runtime.ChronicleRuntime;
 import io.github.andriyko69.chronicle.runtime.InfrastructureConfig;
 import io.github.andriyko69.chronicle.listener.PlayerBlockListener;
 import io.github.andriyko69.chronicle.container.ContainerSessionManager;
+import io.github.andriyko69.chronicle.container.StorageAudit;
 import io.github.andriyko69.chronicle.command.ChronicleCommands;
 import io.github.andriyko69.chronicle.inspect.InspectorListener;
 import io.github.andriyko69.chronicle.inspect.InspectorSessions;
@@ -27,12 +28,15 @@ public final class Chronicle {
     private ChronicleRuntime runtime;
     private final ChronicleCommands commands;
     private final ContainerSessionManager containers;
+    private final StorageAudit storage;
     private final InspectorSessions inspectors = new InspectorSessions();
 
     public Chronicle(ModContainer container) {
         version = container.getModInfo().getVersion().toString();
         containers = new ContainerSessionManager(() -> runtime, ChronicleClock.system());
         containers.register();
+        storage = new StorageAudit(() -> runtime, ChronicleClock.system(), containers);
+        storage.register();
         commands = new ChronicleCommands(() -> runtime, ChronicleClock.system(), inspectors);
         NeoForge.EVENT_BUS.addListener(commands::onRegister);
         new InspectorListener(inspectors, commands::inspect).register();
@@ -52,6 +56,7 @@ public final class Chronicle {
         }
     }
     private void stopping(ServerStoppingEvent event) {
+        storage.stop(event.getServer());
         containers.stop(event.getServer());
         commands.clearSessions();
         inspectors.clear();

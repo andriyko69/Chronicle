@@ -90,7 +90,8 @@ public final class LookupCommandGameTests {
             }
             helper.assertTrue(!query.pending.lines.isEmpty(), "Waiting for complete lookup response");
             String text = String.join("\n", query.pending.lines);
-            boolean drained = query.pending.rows() == 8 && text.contains("LookupFake") && text.contains("minecraft:gold_block") && text.contains("[NBT]");
+            boolean drained = query.pending.rows() == 8 && text.contains("LookupFake") && text.contains("minecraft:gold_block") && text.contains("[NBT]")
+                    && text.contains("took ×1 diamond from chest");
             if (drained) query.successful = query.pending;
             query.pending = null;
             helper.assertTrue(drained, "Waiting for lookup engine events");
@@ -98,7 +99,7 @@ public final class LookupCommandGameTests {
             execute(source.withSource(page), "ch p 2");
             execute(source.withSource(status), "ch status");
         }).thenWaitUntil(() -> {
-            helper.assertTrue(page.rows() == 5, "Second page has five remaining rows");
+            helper.assertTrue(page.rows() == 6, "Second page has six remaining rows, including the chest spill");
             var all = new ArrayList<>(query.successful.lines); all.addAll(page.lines);
             String text = String.join("\n", all);
             String oreCoords = "(" + orePos.getX() + ", " + orePos.getY() + ", " + orePos.getZ() + ")";
@@ -108,7 +109,7 @@ public final class LookupCommandGameTests {
             String realPlaceCoords = "(" + realPlacePos.getX() + ", " + realPlacePos.getY() + ", " + realPlacePos.getZ() + ")";
             helper.assertTrue(all.stream().anyMatch(line -> line.contains(realPlaceCoords) && line.contains(" placed ")
                     && line.contains("Actor UUID: " + profile.getId()) && line.contains("Old state: minecraft:air\nNew state: minecraft:emerald_block")), "Exact PLAYER placement actor, coordinates and states");
-            helper.assertTrue(java.util.stream.Stream.concat(query.successful.components.stream(), page.components.stream()).map(ChatEvidence::eventId).filter(Objects::nonNull).distinct().count() == 13, "No duplicates between pages after drain");
+            helper.assertTrue(java.util.stream.Stream.concat(query.successful.components.stream(), page.components.stream()).map(ChatEvidence::eventId).filter(Objects::nonNull).distinct().count() == 14, "No duplicates between pages after drain");
             String health = String.join("\n", status.lines);
             for (String metric : List.of("HEALTHY", "schema=4", "queue=", "journal backlog=", "allocated bytes=", "persisted events=", "DLQ=", "retries=", "persistence failures=", "Last flush=", "last commit=", "Database totals:"))
                 helper.assertTrue(health.contains(metric), "Status metric " + metric);

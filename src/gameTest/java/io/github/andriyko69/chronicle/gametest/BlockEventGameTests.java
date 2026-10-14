@@ -80,7 +80,11 @@ public final class BlockEventGameTests {
             var hit = new BlockHitResult(Vec3.atCenterOf(base).add(0, 0.5, 0), Direction.UP, base, false);
             fake.getMainHandItem().useOn(new UseOnContext(fake, InteractionHand.MAIN_HAND, hit));
             helper.assertTrue(level.getBlockState(base.above()).is(Blocks.GOLD_BLOCK), "Engine placement happened");
-            verifyWhenPersisted(helper, fake.getUUID(), 2, events -> {
+            verifyWhenPersisted(helper, fake.getUUID(), 3, events -> {
+                var spilled = events.stream().filter(e -> e.envelope().eventType().equals("ITEM_TAKE")).findFirst().orElseThrow();
+                helper.assertTrue(spilled.envelope().targetId().equals("minecraft:diamond") && spilled.envelope().x() == chestPos.getX()
+                        && new io.github.andriyko69.chronicle.codec.ItemTransactionPayloadCodec().decode(spilled.payloadVersion(), spilled.payload()).count() == 3,
+                        "Broken chest contents recorded as a spill");
                 var broken = events.stream().filter(e -> e.envelope().eventType().equals("BLOCK_BREAK")).findFirst().orElseThrow();
                 var placed = events.stream().filter(e -> e.envelope().eventType().equals("BLOCK_PLACE")).findFirst().orElseThrow();
                 helper.assertTrue(broken.envelope().actorType().equals("FAKE_PLAYER"), "Persisted FakePlayer classification");

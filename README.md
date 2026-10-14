@@ -4,9 +4,9 @@ Chronicle is a server-side NeoForge 1.21.1 mod being developed into a forensic
 logging, inspection, querying, and rollback system for modded Minecraft.
 Correctness and forensic reliability take priority over feature velocity.
 
-**Early development:** player block break, placement and world-container net item
-transactions are captured on the logical server thread, journaled, and persisted
-to SQLite. Operator lookup, pagination and status commands are available.
+**Early development:** player block break, placement, world-container net item
+transactions, container break spills and menu-less storage interactions are
+captured on the logical server thread, journaled, and persisted to SQLite. Operator lookup, pagination and status commands are available.
 Inspection and rollback are not implemented yet.
 
 Chronicle is intended to run on a dedicated server without requiring players
@@ -126,9 +126,7 @@ across slots; rearranging stacks or taking and returning items emits no event.
 Only persistent BlockEntity-backed slots count, including both double chest
 halves and crafter inputs. Double chest coordinates use the lexicographically
 smallest `(x, y, z)` half, independent of which half was opened. Virtual menus,
-player/ender inventories and transient result previews are excluded. Chiseled
-bookshelves are covered only when exposed through a world-backed menu; vanilla
-direct bookshelf interaction does not open one.
+player/ender inventories and transient result previews are excluded.
 
 Component patches use registry-aware Minecraft 1.21.1 codecs on the server thread.
 Plain items store no component snapshot. Modified items retain at most 16 KiB of
@@ -146,6 +144,32 @@ The net difference observes changes over the entire open interval. Automation,
 furnace processing and simultaneous viewers can contribute to that difference;
 these records identify the session player and do not prove exclusive causality.
 No world or player state is mutated by auditing.
+
+## Spills and menu-less storage
+
+When a player break or an explosion removes a storage block (any BlockEntity
+container, lectern or campfire), its contents are recorded as `ITEM_TAKE` rows at
+the block's own position. Shulker box contents are included: they leave the
+position inside the dropped item. Contents are captured at the break or detonate
+hook and recorded only after the block entity is confirmed removed at the next
+tick boundary, so refused breaks and non-destructive explosions record nothing.
+Explosions are attributed to `ENVIRONMENT` with actor `#<source entity>` (or
+`#explosion`) and the igniting player, when known, as the root actor. Players
+viewing that container are credited with their changes up to the break and are
+not blamed for the spill.
+
+Direct clicks on chiseled bookshelves, decorated pots, jukeboxes, lecterns
+(including taking the book through the lectern screen), campfires, item frames
+and glow item frames are net-diffed between the interaction hook and the next tick
+boundary. Rotating a framed item is not a transaction. Attacks that pop an item
+and explosions that destroy a frame record `ITEM_TAKE`. Unrolled loot containers
+are skipped rather than generating loot. All observers of one storage share a
+baseline, so each change is recorded once: to the remover, else the latest click,
+else the earliest player whose lectern screen is still open. Changes from automation
+in the same tick, or a lectern screen action in the same tick as another player's
+click, can therefore be attributed to the wrong one of those players.
+Frames dropped after losing support, pots broken by projectiles, campfire cooking
+output and removals by other mods or entities are not observed.
 
 ## Lookup and status commands
 
