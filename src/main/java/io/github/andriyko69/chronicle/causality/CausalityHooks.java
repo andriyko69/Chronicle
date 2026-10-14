@@ -11,8 +11,9 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 
 /**
- * Static entry points for Chronicle's Mixins, which cannot hold instance references. Vanilla fire spread, burnout and
- * chain-primed TNT post no NeoForge events. Every registered audit (the mod's, and the GameTest mod's) observes each call.
+ * Static entry points for Chronicle's Mixins, which cannot hold instance references. Vanilla fire spread, burnout,
+ * chain-primed TNT and bucket fluid placement or pickup post no NeoForge events. Every registered audit (the mod's, and
+ * the GameTest mod's) observes each call.
  */
 public final class CausalityHooks {
     private static final List<EnvironmentAudit> AUDITS = new CopyOnWriteArrayList<>();
@@ -27,5 +28,6 @@ public final class CausalityHooks {
     public static void firePlaced(Level level, BlockPos pos, BlockState oldState) { for (var audit : AUDITS) audit.firePlaced(level, pos, oldState); }
     public static void chainPriming(Level level, Explosion explosion) { for (var audit : AUDITS) audit.chainPriming(level, explosion); }
     public static void chainPrimed(Level level, Explosion explosion) { for (var audit : AUDITS) audit.chainPrimed(level, explosion); }
-    public static void fluidEmptied(Player player, Level level, BlockPos pos) { for (var audit : AUDITS) audit.fluidEmptied(player, level, pos); }
+    public static void bucketEmptied(Player player, BlockCapture before) { for (var audit : AUDITS) audit.bucketEmptied(player, before); }
+    public static void bucketFilled(Player player, BlockCapture before) { for (var audit : AUDITS) audit.bucketFilled(player, before); }
 }

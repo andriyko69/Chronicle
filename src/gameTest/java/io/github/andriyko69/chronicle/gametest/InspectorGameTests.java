@@ -18,6 +18,7 @@ import net.minecraft.server.level.*;
 import net.minecraft.server.players.PlayerList;
 import net.minecraft.server.players.ServerOpListEntry;
 import net.minecraft.world.*;
+import net.minecraft.world.entity.decoration.ItemFrame;
 import net.minecraft.world.item.*;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.*;
@@ -122,6 +123,14 @@ public final class InspectorGameTests {
     private static void leftClick(Inspector inspector, BlockPos pos) {
         inspector.player.gameMode.handleBlockBreakAction(pos, ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, Direction.UP,
                 inspector.player.serverLevel().getMaxBuildHeight(), 1);
+    }
+    /** Aims straight down from a block above {@code target}, so a bucket pours into it or scoops its source. */
+    private static InteractionResult useBucket(Inspector inspector, BlockPos target, Item bucket) {
+        var player = inspector.player;
+        player.setPos(target.getX() + .5, target.getY() + 1, target.getZ() + .5);
+        player.setXRot(90);
+        player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(bucket));
+        return player.gameMode.useItem(player, player.serverLevel(), player.getMainHandItem(), InteractionHand.MAIN_HAND);
     }
     private static void ready(GameTestHelper helper) {
         helper.assertTrue(ChronicleTestMod.ready.isDone(), "Waiting for Chronicle startup"); ChronicleTestMod.ready.join();
@@ -304,5 +313,152 @@ public final class InspectorGameTests {
             } catch (IllegalStateException expected) { }
             leave(inspector);
         }).thenSucceed();
+    }
+
+    @GameTest(template = "empty", timeoutTicks = 800)
+    public static void bucketPourAndPickupAreAuditedInspectableAndInertWhileInspecting(GameTestHelper helper) {
+        var level = helper.getLevel(); var inspector = join(helper, "InspectBucket"); var player = inspector.player;
+        var floor = helper.absolutePos(new BlockPos(1, 0, 1)); var pool = floor.above();
+        var sentinelFloor = helper.absolutePos(new BlockPos(3, 0, 3)); var sentinel = sentinelFloor.above();
+        var probe = new Probe(); var mark = new Object() { int chat; };
+        String history = "ch l r:global t:1h a:block u:" + inspector.id();
+        helper.startSequence().thenWaitUntil(() -> ready(helper)).thenExecute(() -> {
+            level.setBlockAndUpdate(floor, Blocks.STONE.defaultBlockState());
+            level.setBlockAndUpdate(sentinelFloor, Blocks.STONE.defaultBlockState());
+            player.setGameMode(GameType.SURVIVAL);
+            useBucket(inspector, pool, Items.LAVA_BUCKET);
+            helper.assertTrue(level.getFluidState(pool).isSourceOfType(net.minecraft.world.level.material.Fluids.LAVA)
+                    && player.getMainHandItem().is(Items.BUCKET), "Lava poured");
+            useBucket(inspector, pool, Items.BUCKET);
+            helper.assertTrue(level.getBlockState(pool).isAir() && player.getMainHandItem().is(Items.LAVA_BUCKET), "Lava scooped up");
+        }).thenWaitUntil(() -> awaitConsole(helper, probe, history,
+                lines -> rows(lines, " placed ") == 1 && rows(lines, " broke ") == 1, "Waiting for bucket persistence"))
+        .thenExecute(() -> {
+            command(inspector, "ch i");
+            mark.chat = inspector.chat.size();
+            rightClick(inspector, InteractionHand.MAIN_HAND, floor, Direction.UP);
+            helper.assertTrue(useBucket(inspector, pool, Items.LAVA_BUCKET) == InteractionResult.FAIL && level.getBlockState(pool).isAir()
+                    && player.getMainHandItem().is(Items.LAVA_BUCKET), "Inspector pour suppressed");
+            level.setBlockAndUpdate(pool, Blocks.LAVA.defaultBlockState());
+            helper.assertTrue(useBucket(inspector, pool, Items.BUCKET) == InteractionResult.FAIL && level.getBlockState(pool).is(Blocks.LAVA)
+                    && player.getMainHandItem().is(Items.BUCKET), "Inspector pickup suppressed");
+            level.setBlockAndUpdate(pool, Blocks.AIR.defaultBlockState());
+        }).thenWaitUntil(() -> {
+            var lines = inspector.lines(mark.chat);
+            helper.assertTrue(lines.stream().anyMatch(line -> line.contains("Inspecting " + coordinates(pool))), "Waiting for pool header");
+            var mine = lines.stream().filter(line -> line.contains("Event ID: ") && line.contains("Actor UUID: " + inspector.id())).toList();
+            helper.assertTrue(mine.size() == 2, "Only the pour and the pickup at the pool");
+            helper.assertTrue(mine.stream().anyMatch(line -> line.contains(" placed ") && line.contains("Old state: minecraft:air")
+                    && line.contains("New state: minecraft:lava")), "Pour shown");
+            helper.assertTrue(mine.stream().anyMatch(line -> line.contains(" broke ") && line.contains("Old state: minecraft:lava")
+                    && line.contains("New state: minecraft:air")), "Pickup shown");
+        }).thenExecute(() -> {
+            command(inspector, "ch i off");
+            useBucket(inspector, sentinel, Items.LAVA_BUCKET);
+            useBucket(inspector, sentinel, Items.BUCKET);
+            helper.assertTrue(level.getBlockState(sentinel).isAir(), "Sentinel pour and pickup");
+        }).thenWaitUntil(() -> awaitConsole(helper, probe, history,
+                lines -> rows(lines, " placed ") == 2 && rows(lines, " broke ") == 2, "Inspector bucket use recorded nothing"))
+        .thenExecute(() -> leave(inspector)).thenSucceed();
+    }
+
+    @GameTest(template = "empty", timeoutTicks = 600)
+    public static void rightClickLecternAndCampfireInspectsTheBlockItself(GameTestHelper helper) {
+        var level = helper.getLevel(); var inspector = join(helper, "InspectLectern"); var second = join(helper, "InspectCampfire");
+        var lectern = helper.absolutePos(new BlockPos(1, 1, 1)); var campfire = helper.absolutePos(new BlockPos(3, 1, 1));
+        var probe = new Probe(); var marks = new int[2];
+        helper.startSequence().thenWaitUntil(() -> ready(helper)).thenExecute(() -> {
+            level.setBlockAndUpdate(lectern, Blocks.LECTERN.defaultBlockState());
+            level.setBlockAndUpdate(campfire, Blocks.CAMPFIRE.defaultBlockState());
+            inspector.player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.WRITABLE_BOOK));
+            rightClick(inspector, InteractionHand.MAIN_HAND, lectern, Direction.UP);
+            inspector.player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.BEEF));
+            rightClick(inspector, InteractionHand.MAIN_HAND, campfire, Direction.UP);
+            helper.assertTrue(level.getBlockState(lectern).getValue(LecternBlock.HAS_BOOK), "Book placed");
+        }).thenWaitUntil(() -> awaitConsole(helper, probe, "ch l r:global t:1h a:item u:" + inspector.id(),
+                lines -> rows(lines, " put ") == 2, "Waiting for storage persistence"))
+        .thenExecute(() -> {
+            command(inspector, "ch i on"); command(second, "ch i on");
+            inspector.player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.DIRT, 5));
+            second.player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.BEEF, 5));
+            marks[0] = inspector.chat.size(); marks[1] = second.chat.size();
+            rightClick(inspector, InteractionHand.MAIN_HAND, lectern, Direction.UP);
+            rightClick(second, InteractionHand.MAIN_HAND, campfire, Direction.UP);
+        }).thenWaitUntil(() -> {
+            for (int i = 0; i < 2; i++) {
+                var pos = i == 0 ? lectern : campfire; var item = i == 0 ? "Item: minecraft:writable_book" : "Item: minecraft:beef";
+                var lines = (i == 0 ? inspector : second).lines(marks[i]);
+                helper.assertTrue(lines.stream().anyMatch(line -> line.contains("Inspecting " + coordinates(pos))), "Waiting for block header " + i);
+                helper.assertTrue(lines.stream().anyMatch(line -> line.contains("Actor UUID: " + inspector.id()) && line.contains(" put ")
+                        && line.contains(item)), "Storage history " + i);
+            }
+            helper.assertTrue(inspector.player.containerMenu == inspector.player.inventoryMenu, "No lectern menu opened");
+            helper.assertTrue(second.player.getMainHandItem().getCount() == 5, "Campfire took no food");
+            helper.assertTrue(level.getBlockState(lectern.above()).isAir(), "Held block never placed");
+            leave(inspector); leave(second);
+        }).thenSucceed();
+    }
+
+    @GameTest(template = "empty", timeoutTicks = 800)
+    public static void itemFrameClicksInspectWithoutBreakingRotatingOrAuditing(GameTestHelper helper) {
+        var level = helper.getLevel(); var attacker = join(helper, "InspectFrameL"); var user = join(helper, "InspectFrameR");
+        var spectator = join(helper, "InspectFrameS");
+        var framePos = helper.absolutePos(new BlockPos(2, 2, 2)); var wall = framePos.south();
+        var sentinelFloor = helper.absolutePos(new BlockPos(4, 0, 4));
+        var probe = new Probe(); var marks = new int[3]; var frames = new Object() { ItemFrame frame; };
+        helper.startSequence().thenWaitUntil(() -> ready(helper)).thenExecute(() -> {
+            level.setBlockAndUpdate(wall, Blocks.STONE.defaultBlockState());
+            level.setBlockAndUpdate(sentinelFloor, Blocks.STONE.defaultBlockState());
+            frames.frame = new ItemFrame(level, framePos, Direction.NORTH);
+            helper.assertTrue(level.addFreshEntity(frames.frame) && frames.frame.survives(), "Frame hangs on the wall");
+            attacker.player.setGameMode(GameType.SURVIVAL);
+            attacker.player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.EMERALD));
+            attacker.player.interactOn(frames.frame, InteractionHand.MAIN_HAND);
+            helper.assertTrue(frames.frame.getItem().is(Items.EMERALD), "Emerald framed");
+        }).thenWaitUntil(() -> awaitConsole(helper, probe, "ch l r:global t:1h a:item u:" + attacker.id(),
+                lines -> rows(lines, " put ") == 1, "Waiting for frame persistence"))
+        .thenExecute(() -> {
+            command(attacker, "ch i on"); command(user, "ch i on"); command(spectator, "ch i on");
+            marks[0] = attacker.chat.size(); marks[1] = user.chat.size(); marks[2] = spectator.chat.size();
+            var frame = frames.frame;
+            attacker.player.attack(frame);
+            user.player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.DIAMOND));
+            user.player.setItemInHand(InteractionHand.OFF_HAND, new ItemStack(Items.GOLD_INGOT));
+            helper.assertTrue(net.neoforged.neoforge.common.CommonHooks.onInteractEntityAt(user.player, frame, frame.position(),
+                    InteractionHand.MAIN_HAND) == InteractionResult.SUCCESS, "Interact-at canceled");
+            helper.assertTrue(user.player.interactOn(frame, InteractionHand.MAIN_HAND) == InteractionResult.SUCCESS, "Main-hand use canceled");
+            helper.assertTrue(user.player.interactOn(frame, InteractionHand.OFF_HAND) == InteractionResult.SUCCESS, "Off-hand use canceled");
+            helper.assertTrue(frame.isAlive() && frame.getItem().is(Items.EMERALD) && frame.getRotation() == 0, "Frame and item intact");
+            helper.assertTrue(user.player.getMainHandItem().is(Items.DIAMOND) && user.player.getOffhandItem().is(Items.GOLD_INGOT), "Held items kept");
+            // A spectator's client sends both packets, but the server posts no EntityInteract for spectators.
+            spectator.player.setGameMode(GameType.SPECTATOR);
+            net.neoforged.neoforge.common.CommonHooks.onInteractEntityAt(spectator.player, frame, frame.position(), InteractionHand.MAIN_HAND);
+            spectator.player.interactOn(frame, InteractionHand.MAIN_HAND);
+            helper.assertTrue(frame.isAlive() && frame.getItem().is(Items.EMERALD) && frame.getRotation() == 0, "Frame intact after spectator click");
+        }).thenWaitUntil(() -> {
+            var inspectors = List.of(attacker, user, spectator);
+            for (int i = 0; i < 3; i++) {
+                var lines = inspectors.get(i).lines(marks[i]);
+                helper.assertTrue(lines.stream().anyMatch(line -> line.contains("Inspecting " + coordinates(framePos))), "Waiting for frame header " + i);
+                helper.assertTrue(lines.stream().anyMatch(line -> line.contains("Actor UUID: " + attacker.id()) && line.contains(" put ")
+                        && line.contains("Item: minecraft:emerald")), "Frame history " + i);
+            }
+            for (int i = 1; i < 3; i++)
+                helper.assertTrue(inspectors.get(i).lines(marks[i]).stream().filter(line -> line.startsWith("Inspecting ")).count() == 1, "One lookup per click " + i);
+        }).thenExecute(() -> {
+            command(attacker, "ch i off"); command(user, "ch i off"); command(spectator, "ch i off");
+            for (var admin : List.of(attacker, user)) {
+                admin.player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.EMERALD_BLOCK));
+                helper.assertTrue(rightClick(admin, InteractionHand.MAIN_HAND, sentinelFloor, Direction.UP).consumesAction(), "Sentinel placed");
+                admin.player.gameMode.destroyBlock(sentinelFloor.above());
+            }
+            frames.frame.discard();
+        }).thenWaitUntil(() -> awaitConsole(helper, probe, "ch l r:global t:1h u:" + attacker.id(),
+                lines -> rows(lines, "Event ID: ") == 3 && rows(lines, " put ") == 1 && rows(lines, " took ") == 0
+                        && rows(lines, " placed ") == 1 && rows(lines, " broke ") == 1, "Attacker recorded only the framing and sentinel"))
+        .thenWaitUntil(() -> awaitConsole(helper, probe, "ch l r:global t:1h u:" + user.id(),
+                lines -> rows(lines, "Event ID: ") == 2 && rows(lines, " placed ") == 1 && rows(lines, " broke ") == 1,
+                "User recorded only the sentinel"))
+        .thenExecute(() -> { leave(attacker); leave(user); leave(spectator); }).thenSucceed();
     }
 }

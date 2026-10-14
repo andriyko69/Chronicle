@@ -160,9 +160,25 @@ public final class EnvironmentAudit {
         if (root != null) fire.seed(dimension(level), event.getPos().asLong(), root, tick(level));
     }
 
-    void fluidEmptied(Player player, Level level, BlockPos pos) {
-        if (player == null || !(level instanceof ServerLevel server) || !server.getServer().isSameThread()) return;
-        if (server.getFluidState(pos).is(FluidTags.LAVA)) fire.seed(dimension(server), pos.asLong(), root(player), tick(server));
+    void bucketEmptied(Player player, BlockCapture before) {
+        var level = before.level();
+        if (!level.getServer().isSameThread()) return;
+        if (level.getFluidState(before.pos()).is(FluidTags.LAVA)) fire.seed(dimension(level), before.pos().asLong(), root(player), tick(level));
+        bucketChanged(player, before, "BLOCK_PLACE");
+    }
+
+    void bucketFilled(Player player, BlockCapture before) { bucketChanged(player, before, "BLOCK_BREAK"); }
+
+    /** Vaporized, ultrawarm and already-source placements report success without changing the block; they log nothing. */
+    private void bucketChanged(Player player, BlockCapture before, String type) {
+        var level = before.level();
+        if (!owned(level)) return;
+        try {
+            var after = level.getBlockState(before.pos());
+            if (after == before.state()) return;
+            submit(level, before.pos(), type, AuditActor.player(player), PlayerBlockListener.state(before.state()),
+                    PlayerBlockListener.state(after), before.nbt(), clock.now());
+        } catch (RuntimeException failure) { captureFailed(failure); }
     }
 
     public void impact(ProjectileImpactEvent event) {
@@ -306,23 +322,23 @@ public final class EnvironmentAudit {
             }
             var current = removal.level().getBlockState(removal.pos());
             if (current.is(removal.state().getBlock())) return false;
-            submit(removal, PlayerBlockListener.state(current));
+            submit(removal.level(), removal.pos(), "BLOCK_BREAK", removal.actor(), removal.before(), PlayerBlockListener.state(current),
+                    removal.nbt(), removal.at());
         } catch (RuntimeException failure) { captureFailed(failure); }
         return true;
     }
 
-    private void submit(PendingBreak removal, BlockStateSnapshot after) {
+    private void submit(ServerLevel level, BlockPos pos, String type, AuditActor actor, BlockStateSnapshot before,
+            BlockStateSnapshot after, SnapshotNbt nbt, Instant at) {
         var destination = runtime.get();
         if (destination == null) return;
-        var actor = removal.actor();
-        var pos = removal.pos();
-        var envelope = new EventEnvelope(dimension(removal.level()), pos.getX(), pos.getY(), pos.getZ(), "BLOCK_BREAK",
-                actor.type(), actor.id(), actor.uuid(), actor.rootUuid(), actor.rootName(), removal.before().blockId());
-        var payload = new BlockDeltaPayload(removal.before(), after, BlockDeltaPayload.Observation.HOOK_OBSERVATION,
-                removal.nbt().status(), removal.nbt().bytes());
-        var result = destination.submit(AuditEvent.block(EventId.generate(), removal.at(), envelope, payload));
+        var envelope = new EventEnvelope(dimension(level), pos.getX(), pos.getY(), pos.getZ(), type,
+                actor.type(), actor.id(), actor.uuid(), actor.rootUuid(), actor.rootName(),
+                type.equals("BLOCK_BREAK") ? before.blockId() : after.blockId());
+        var payload = new BlockDeltaPayload(before, after, BlockDeltaPayload.Observation.HOOK_OBSERVATION, nbt.status(), nbt.bytes());
+        var result = destination.submit(AuditEvent.block(EventId.generate(), at, envelope, payload));
         if (result.status() != Submission.Status.ACCEPTED)
-            LOG.warn("Chronicle {} break at {} was not admitted: {}", actor.id(), pos, result.status());
+            LOG.warn("Chronicle {} {} at {} was not admitted: {}", actor.id(), type, pos, result.status());
     }
 
     public void stop(MinecraftServer server) {

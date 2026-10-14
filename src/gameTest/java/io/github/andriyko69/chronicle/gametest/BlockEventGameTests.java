@@ -20,6 +20,7 @@ import net.minecraft.world.item.*;
 import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.SlabBlock;
 import net.minecraft.world.level.block.entity.ChestBlockEntity;
 import net.minecraft.world.phys.*;
 import net.neoforged.neoforge.common.NeoForge;
@@ -132,6 +133,40 @@ public final class BlockEventGameTests {
             verifyWhenPersisted(helper, fake.getUUID(), 1, events -> helper.assertTrue(
                     delta(events.getFirst()).snapshotStatus() == BlockDeltaPayload.SnapshotStatus.OVERSIZED
                             && delta(events.getFirst()).snapshotNbt() == null, "Oversized NBT string must never be stored as empty text"));
+        });
+    }
+
+    /** Bucket placement posts no place event and pickup no break event; both are observed around vanilla's own calls. */
+    @GameTest(template = "empty", timeoutTicks = 400)
+    public static void fakePlayerBucketWaterlogsAndDrainsSlab(GameTestHelper helper) {
+        var level = helper.getLevel(); var fake = fake(helper);
+        var slab = helper.absolutePos(new BlockPos(2, 1, 2));
+        helper.startSequence().thenWaitUntil(() -> ready(helper)).thenExecute(() -> {
+            level.setBlockAndUpdate(slab, Blocks.OAK_SLAB.defaultBlockState());
+            fake.gameMode.changeGameModeForPlayer(GameType.SURVIVAL);
+            fake.setPos(slab.getX() + .5, slab.getY() + 1, slab.getZ() + .5);
+            fake.setXRot(90);
+            fake.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.WATER_BUCKET));
+            fake.gameMode.useItem(fake, level, fake.getMainHandItem(), InteractionHand.MAIN_HAND);
+            helper.assertTrue(level.getBlockState(slab).getValue(SlabBlock.WATERLOGGED) && fake.getMainHandItem().is(Items.BUCKET), "Slab waterlogged");
+            fake.gameMode.useItem(fake, level, fake.getMainHandItem(), InteractionHand.MAIN_HAND);
+            helper.assertTrue(!level.getBlockState(slab).getValue(SlabBlock.WATERLOGGED) && fake.getMainHandItem().is(Items.WATER_BUCKET), "Slab drained");
+            level.setBlockAndUpdate(slab, Blocks.AIR.defaultBlockState());
+            verifyWhenPersisted(helper, fake.getUUID(), 2, events -> {
+                var placed = events.stream().filter(e -> e.envelope().eventType().equals("BLOCK_PLACE")).toList();
+                var drained = events.stream().filter(e -> e.envelope().eventType().equals("BLOCK_BREAK")).toList();
+                helper.assertTrue(placed.size() == 1 && drained.size() == 1, "One placement and one pickup");
+                for (var event : events) {
+                    var envelope = event.envelope();
+                    helper.assertTrue(envelope.actorType().equals("FAKE_PLAYER") && envelope.targetId().equals("minecraft:oak_slab")
+                            && envelope.x() == slab.getX() && envelope.y() == slab.getY() && envelope.z() == slab.getZ(), "Attributed slab row " + envelope);
+                }
+                var fill = delta(placed.getFirst()); var drain = delta(drained.getFirst());
+                helper.assertTrue(fill.before().properties().get("waterlogged").equals("false")
+                        && fill.after().properties().get("waterlogged").equals("true"), "Waterlogging states " + fill);
+                helper.assertTrue(drain.before().properties().get("waterlogged").equals("true")
+                        && drain.after().properties().get("waterlogged").equals("false"), "Pickup states " + drain);
+            });
         });
     }
 }

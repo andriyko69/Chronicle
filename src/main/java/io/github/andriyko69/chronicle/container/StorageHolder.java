@@ -36,9 +36,12 @@ public sealed interface StorageHolder {
     /** Storage whose contents leave its position when the block is removed. */
     static Optional<StorageHolder> spillable(ServerLevel level, BlockPos pos) {
         var entity = level.getBlockEntity(pos);
-        if (entity instanceof Container || entity instanceof LecternBlockEntity || entity instanceof CampfireBlockEntity)
-            return block(level, pos, entity);
-        return Optional.empty();
+        return holdsItems(entity) ? block(level, pos, entity) : Optional.empty();
+    }
+
+    /** Block entities whose item history Chronicle records at the block's own position. */
+    static boolean holdsItems(BlockEntity entity) {
+        return entity instanceof Container || entity instanceof LecternBlockEntity || entity instanceof CampfireBlockEntity;
     }
 
     /** Storage that players change by clicking the block itself rather than through a resolvable world menu. */

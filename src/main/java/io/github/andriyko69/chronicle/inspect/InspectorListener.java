@@ -1,17 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 package io.github.andriyko69.chronicle.inspect;
 
+import io.github.andriyko69.chronicle.container.StorageHolder;
 import io.github.andriyko69.chronicle.container.WorldContainer;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.Container;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.decoration.ItemFrame;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.player.AttackEntityEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
@@ -33,6 +35,9 @@ public final class InspectorListener {
         NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::useItem);
         NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::breaking);
         NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::placing);
+        NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::attackFrame);
+        NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::interactFrame);
+        NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::interactFrameAt);
         NeoForge.EVENT_BUS.addListener(this::loggedOut);
     }
     public void leftClick(PlayerInteractEvent.LeftClickBlock event) {
@@ -50,7 +55,7 @@ public final class InspectorListener {
         resyncInventory(player);
         if (event.getHand() != InteractionHand.MAIN_HAND || !(event.getLevel() instanceof ServerLevel level)) return;
         BlockPos clicked = event.getPos();
-        trigger(player, level, () -> level.getBlockEntity(clicked) instanceof Container
+        trigger(player, level, () -> StorageHolder.holdsItems(level.getBlockEntity(clicked))
                 ? WorldContainer.canonicalPosition(level, clicked)
                 : event.getFace() == null ? clicked.immutable() : clicked.relative(event.getFace()));
     }
@@ -60,6 +65,30 @@ public final class InspectorListener {
         event.setCanceled(true);
         event.setCancellationResult(InteractionResult.FAIL);
         resyncInventory(player);
+    }
+    /** Item frames are entities: their item pops on attack and rotates or is placed on use, with no block event. */
+    public void attackFrame(AttackEntityEvent event) {
+        if (!(event.getTarget() instanceof ItemFrame frame) || !(inspecting(event.getEntity()) instanceof ServerPlayer player)) return;
+        event.setCanceled(true);
+        if (frame.level() instanceof ServerLevel level) trigger(player, level, frame::getPos);
+    }
+    public void interactFrame(PlayerInteractEvent.EntityInteract event) {
+        if (!(event.getTarget() instanceof ItemFrame frame) || !(inspecting(event.getEntity()) instanceof ServerPlayer player)) return;
+        event.setCanceled(true);
+        event.setCancellationResult(InteractionResult.SUCCESS);
+        resyncInventory(player);
+        if (event.getHand() == InteractionHand.MAIN_HAND && frame.level() instanceof ServerLevel level) trigger(player, level, frame::getPos);
+    }
+    /**
+     * Precedes the plain interaction packet for the same click, which performs the lookup; spectators get no
+     * EntityInteract, so this is their only lookup.
+     */
+    public void interactFrameAt(PlayerInteractEvent.EntityInteractSpecific event) {
+        if (!(event.getTarget() instanceof ItemFrame frame) || !(inspecting(event.getEntity()) instanceof ServerPlayer player)) return;
+        event.setCanceled(true);
+        event.setCancellationResult(InteractionResult.SUCCESS);
+        if (player.isSpectator() && event.getHand() == InteractionHand.MAIN_HAND && frame.level() instanceof ServerLevel level)
+            trigger(player, level, frame::getPos);
     }
     public void breaking(BlockEvent.BreakEvent event) {
         if (inspecting(event.getPlayer()) != null) event.setCanceled(true);
