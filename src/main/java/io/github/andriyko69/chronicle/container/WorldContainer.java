@@ -9,6 +9,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.*;
 import net.minecraft.world.inventory.*;
+import net.minecraft.world.level.block.ChestBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 
 /** Live handles belong exclusively to the owning server thread and never enter submitted events. */
@@ -27,9 +28,7 @@ public record WorldContainer(ServerLevel level, BlockPos position, String blockI
             if (!(entities.getFirst().getLevel() instanceof ServerLevel level) || level != player.serverLevel()) continue;
             if (entities.stream().anyMatch(be -> be.getLevel() != level || be.isRemoved()
                     || level.getBlockEntity(be.getBlockPos()) != be)) continue;
-            // Lexicographic coordinates keep double chest envelopes stable from either opening half.
-            BlockPos position = entities.stream().map(BlockEntity::getBlockPos).min(Comparator.<BlockPos>comparingInt(pos -> pos.getX())
-                    .thenComparingInt(BlockPos::getY).thenComparingInt(BlockPos::getZ)).orElseThrow();
+            BlockPos position = canonical(entities);
             var unique = new LinkedHashMap<Integer, Slot>();
             for (Slot slot : entry.getValue()) unique.putIfAbsent(slot.getContainerSlot(), slot);
             resolved.add(new WorldContainer(level, position, BuiltInRegistries.BLOCK.getKey(level.getBlockState(position).getBlock()).toString(),
@@ -37,6 +36,23 @@ public record WorldContainer(ServerLevel level, BlockPos position, String blockI
         }
         resolved.sort(Comparator.comparingInt((WorldContainer c) -> c.position.getX()).thenComparingInt(c -> c.position.getY()).thenComparingInt(c -> c.position.getZ()));
         return List.copyOf(resolved);
+    }
+    /** Inspector lookups must address the same double chest half that container sessions record. */
+    public static BlockPos canonicalPosition(ServerLevel level, BlockPos pos) {
+        if (!level.getServer().isSameThread()) throw new IllegalStateException("Container resolution off server thread");
+        var state = level.getBlockState(pos);
+        if (state.getBlock() instanceof ChestBlock chest) {
+            // Ignore the blocked-lid check: a cat on a chest does not change which halves form the container.
+            var container = ChestBlock.getContainer(chest, state, level, pos, true);
+            var entities = new ArrayList<BlockEntity>();
+            if (container != null && backingEntities(container, entities) && !entities.isEmpty()) return canonical(entities);
+        }
+        return pos.immutable();
+    }
+    // Lexicographic coordinates keep double chest envelopes stable from either opening half.
+    private static BlockPos canonical(List<BlockEntity> entities) {
+        return entities.stream().map(BlockEntity::getBlockPos).min(Comparator.<BlockPos>comparingInt(pos -> pos.getX())
+                .thenComparingInt(BlockPos::getY).thenComparingInt(BlockPos::getZ)).orElseThrow().immutable();
     }
     private static boolean backingEntities(Container container, List<BlockEntity> entities) {
         if (container instanceof BlockEntity entity) { entities.add(entity); return true; }

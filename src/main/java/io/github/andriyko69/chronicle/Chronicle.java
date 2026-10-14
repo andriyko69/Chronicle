@@ -13,6 +13,8 @@ import io.github.andriyko69.chronicle.runtime.InfrastructureConfig;
 import io.github.andriyko69.chronicle.listener.PlayerBlockListener;
 import io.github.andriyko69.chronicle.container.ContainerSessionManager;
 import io.github.andriyko69.chronicle.command.ChronicleCommands;
+import io.github.andriyko69.chronicle.inspect.InspectorListener;
+import io.github.andriyko69.chronicle.inspect.InspectorSessions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,13 +27,15 @@ public final class Chronicle {
     private ChronicleRuntime runtime;
     private final ChronicleCommands commands;
     private final ContainerSessionManager containers;
+    private final InspectorSessions inspectors = new InspectorSessions();
 
     public Chronicle(ModContainer container) {
         version = container.getModInfo().getVersion().toString();
         containers = new ContainerSessionManager(() -> runtime, ChronicleClock.system());
         containers.register();
-        commands = new ChronicleCommands(() -> runtime, ChronicleClock.system());
+        commands = new ChronicleCommands(() -> runtime, ChronicleClock.system(), inspectors);
         NeoForge.EVENT_BUS.addListener(commands::onRegister);
+        new InspectorListener(inspectors, commands::inspect).register();
         NeoForge.EVENT_BUS.addListener(this::starting);
         NeoForge.EVENT_BUS.addListener(this::stopping);
         new PlayerBlockListener(() -> runtime, ChronicleClock.system()).register();
@@ -50,6 +54,7 @@ public final class Chronicle {
     private void stopping(ServerStoppingEvent event) {
         containers.stop(event.getServer());
         commands.clearSessions();
+        inspectors.clear();
         if (runtime != null) {
             try { runtime.close(); }
             catch (Exception failure) { LOG.error("Chronicle shutdown was not clean", failure); }

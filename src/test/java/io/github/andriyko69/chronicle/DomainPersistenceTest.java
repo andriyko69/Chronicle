@@ -49,8 +49,8 @@ class DomainPersistenceTest {
             PersistenceTest.await(() -> runtime.diagnostics().persisted() == 2);
             assertEquals(Set.of(legacy, pending, domain), new HashSet<>(runtime.recent(10).toCompletableFuture().get(5, TimeUnit.SECONDS)));
         }
-        assertEquals(3, PersistenceTest.scalar(config.database(), "PRAGMA user_version"));
-        assertEquals(3, PersistenceTest.scalar(config.database(), "SELECT count(*) FROM schema_migrations"));
+        assertEquals(4, PersistenceTest.scalar(config.database(), "PRAGMA user_version"));
+        assertEquals(4, PersistenceTest.scalar(config.database(), "SELECT count(*) FROM schema_migrations"));
         assertEquals(2, PersistenceTest.scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
         assertEquals(1, PersistenceTest.scalar(config.database(), "SELECT count(*) FROM audit_events"));
         assertEquals(3, PersistenceTest.scalar(config.database(), "SELECT count(*) FROM sqlite_master WHERE name IN ('idx_events_spatial_time','idx_events_actor_time','idx_events_target_time')"));

@@ -13,9 +13,9 @@ public record LookupSql(String sql, List<Object> parameters) {
         if (spec.dimension() != null) { sql.append(" AND world_id = ?"); parameters.add(spec.dimension()); }
         var bounds = spec.bounds();
         if (bounds != null) {
-            sql.append(" AND x BETWEEN ? AND ? AND y BETWEEN ? AND ? AND z BETWEEN ? AND ?");
-            parameters.add(bounds.minX()); parameters.add(bounds.maxX()); parameters.add(bounds.minY()); parameters.add(bounds.maxY());
-            parameters.add(bounds.minZ()); parameters.add(bounds.maxZ());
+            axis(sql, parameters, "x", bounds.minX(), bounds.maxX());
+            axis(sql, parameters, "y", bounds.minY(), bounds.maxY());
+            axis(sql, parameters, "z", bounds.minZ(), bounds.maxZ());
         }
         if (!spec.actors().isEmpty()) {
             var clauses = new ArrayList<String>();
@@ -31,6 +31,11 @@ public record LookupSql(String sql, List<Object> parameters) {
         sql.append(" ORDER BY occurred_at_sec DESC, occurred_at_nanos DESC, event_id DESC LIMIT ? OFFSET ?");
         parameters.add(LookupSpec.PAGE_SIZE + 1); parameters.add(LookupSpec.offset(page));
         return new LookupSql(sql.toString(), parameters);
+    }
+    // A BETWEEN, even with equal ends, is a range to SQLite and stops index seeks; equality reaches the time order.
+    private static void axis(StringBuilder sql, List<Object> parameters, String column, int min, int max) {
+        if (min == max) { sql.append(" AND ").append(column).append(" = ?"); parameters.add(min); }
+        else { sql.append(" AND ").append(column).append(" BETWEEN ? AND ?"); parameters.add(min); parameters.add(max); }
     }
     private static void in(StringBuilder sql, List<Object> parameters, String column, List<String> values) {
         if (values.isEmpty()) return;

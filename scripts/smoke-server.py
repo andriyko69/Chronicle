@@ -129,7 +129,7 @@ def main():
                 infrastructure_closed |= "Chronicle closed:" in line
                 if not ready and re.search(r'Done \([^)]+\)! For help, type "help"', line):
                     ready = True
-                status_health |= "Chronicle Status ── HEALTHY · schema=3" in line
+                status_health |= "Chronicle Status ── HEALTHY · schema=4" in line
                 status_totals |= "Database totals: persisted events=" in line
                 if "Chronicle Lookup ── Page 1" in line:
                     if page_sent:

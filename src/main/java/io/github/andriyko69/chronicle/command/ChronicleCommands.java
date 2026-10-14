@@ -6,6 +6,7 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import io.github.andriyko69.chronicle.event.ChronicleClock;
+import io.github.andriyko69.chronicle.inspect.InspectorSessions;
 import io.github.andriyko69.chronicle.persistence.StorageFailure;
 import io.github.andriyko69.chronicle.query.*;
 import io.github.andriyko69.chronicle.runtime.ChronicleRuntime;
@@ -14,7 +15,9 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
@@ -23,8 +26,10 @@ public final class ChronicleCommands {
     private final ChronicleClock clock;
     private final LookupParser parser;
     private final LookupSessions sessions;
-    public ChronicleCommands(Supplier<ChronicleRuntime> runtime, ChronicleClock clock) {
+    private final InspectorSessions inspectors;
+    public ChronicleCommands(Supplier<ChronicleRuntime> runtime, ChronicleClock clock, InspectorSessions inspectors) {
         this.runtime = runtime; this.clock = clock; parser = new LookupParser(clock); sessions = new LookupSessions(clock);
+        this.inspectors = inspectors;
     }
     public void onRegister(RegisterCommandsEvent event) { register(event.getDispatcher()); }
     public void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -36,6 +41,7 @@ public final class ChronicleCommands {
         return Commands.literal(name).requires(source -> source.hasPermission(2))
                 .then(lookup("lookup")).then(lookup("l"))
                 .then(page("page")).then(page("p"))
+                .then(inspect("inspect")).then(inspect("i"))
                 .then(Commands.literal("status").executes(context -> status(context.getSource())));
     }
     private LiteralArgumentBuilder<CommandSourceStack> lookup(String name) {
@@ -46,6 +52,11 @@ public final class ChronicleCommands {
     private LiteralArgumentBuilder<CommandSourceStack> page(String name) {
         return Commands.literal(name).then(Commands.argument("page", IntegerArgumentType.integer(1, LookupSpec.MAX_PAGE))
                 .executes(context -> page(context.getSource(), IntegerArgumentType.getInteger(context, "page"))));
+    }
+    private LiteralArgumentBuilder<CommandSourceStack> inspect(String name) {
+        return Commands.literal(name).executes(context -> inspect(context.getSource(), null))
+                .then(Commands.literal("on").executes(context -> inspect(context.getSource(), true)))
+                .then(Commands.literal("off").executes(context -> inspect(context.getSource(), false)));
     }
     private static String caller(CommandSourceStack source) {
         return source.getPlayer() == null ? LookupSessions.CONSOLE : source.getPlayer().getUUID().toString();
@@ -76,6 +87,25 @@ public final class ChronicleCommands {
         return deliver(source, active, active.lookup(spec.get(), number), result -> {
             if (result.rows().isEmpty()) source.sendFailure(Component.literal("Page " + number + " has no results."));
             else ChronicleFormatter.page(result, clock, source.getPlayer() == null ? null : source.getLevel().dimension().location().toString()).forEach(line -> send(source, line));
+        }, false);
+    }
+    private int inspect(CommandSourceStack source, Boolean enabled) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) { source.sendFailure(Component.literal("The Chronicle inspector requires an in-game player.")); return 0; }
+        boolean active = enabled == null ? inspectors.toggle(player.getUUID()) : inspectors.set(player.getUUID(), enabled);
+        send(source, ChronicleFormatter.inspector(active));
+        return 1;
+    }
+    /** Runs on the server thread from an inspector click; the lookup itself runs on the query executor. */
+    public void inspect(ServerPlayer player, ServerLevel level, BlockPos target) {
+        var source = player.createCommandSourceStack();
+        String dimension = level.dimension().location().toString();
+        var spec = LookupSpec.exact(dimension, new LookupSpec.Center(target.getX(), target.getY(), target.getZ()));
+        var active = runtime.get();
+        if (active == null) { unavailable(source); return; }
+        deliver(source, active, active.lookup(spec, 1), result -> {
+            sessions.put(player.getUUID().toString(), spec);
+            ChronicleFormatter.inspection(result, clock, dimension, target.getX(), target.getY(), target.getZ()).forEach(line -> send(source, line));
         }, false);
     }
     private int status(CommandSourceStack source) {

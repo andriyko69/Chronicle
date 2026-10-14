@@ -10,6 +10,7 @@ public record LookupSpec(Instant since, String dimension, Bounds bounds,
         List<Actor> actors, List<String> targets, List<String> actions) {
     public static final int PAGE_SIZE = 8;
     public static final int MAX_PAGE = 10_000;
+    public static final List<String> ALL_ACTIONS = List.of("BLOCK_BREAK", "BLOCK_PLACE", "ITEM_TAKE", "ITEM_PUT");
     public record Center(int x, int y, int z) {}
     public record Bounds(int minX, int maxX, int minY, int maxY, int minZ, int maxZ) {
         public Bounds {
@@ -34,6 +35,10 @@ public record LookupSpec(Instant since, String dimension, Bounds bounds,
         actors = List.copyOf(actors); targets = List.copyOf(targets); actions = List.copyOf(actions);
         if (bounds != null && dimension == null) throw new IllegalArgumentException("Spatial lookup needs dimension");
         if (actors.size() > 16 || targets.size() > 16 || actions.size() > 4) throw new IllegalArgumentException("Too many filters");
+    }
+    /** One coordinate's entire history: inspection must not hide old evidence behind the default lookup window. */
+    public static LookupSpec exact(String dimension, Center position) {
+        return new LookupSpec(Instant.EPOCH, Objects.requireNonNull(dimension), Bounds.around(position, 0), List.of(), List.of(), ALL_ACTIONS);
     }
     public static int offset(int page) {
         if (page < 1 || page > MAX_PAGE) throw new IllegalArgumentException("Page must be 1.." + MAX_PAGE);

@@ -10,9 +10,10 @@ import java.util.HexFormat;
 import java.util.List;
 
 public final class MigrationManager {
-    public static final int VERSION = 3;
+    public static final int VERSION = 4;
     private static final int APPLICATION_ID = 0x4348524f;
-    private static final List<String> NAMES = List.of("V001__infrastructure.sql", "V002__audit_events.sql", "V003__lookup_indexes.sql");
+    private static final List<String> NAMES = List.of("V001__infrastructure.sql", "V002__audit_events.sql", "V003__lookup_indexes.sql",
+            "V004__position_index.sql");
     private record Migration(String name, String sql, String checksum) {}
     private MigrationManager() {}
 

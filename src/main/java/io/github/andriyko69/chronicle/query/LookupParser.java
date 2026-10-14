@@ -32,7 +32,7 @@ public final class LookupParser {
         boolean global = false;
         List<LookupSpec.Actor> actors = List.of();
         List<String> targets = List.of();
-        List<String> actions = List.of("BLOCK_BREAK", "BLOCK_PLACE", "ITEM_TAKE", "ITEM_PUT");
+        List<String> actions = LookupSpec.ALL_ACTIONS;
         for (String token : tokens) {
             int split = token.indexOf(':');
             if (split < 1 || split == token.length() - 1) throw syntax("Expected filter:value, got '" + token + "'");

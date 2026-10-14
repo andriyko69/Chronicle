@@ -37,6 +37,22 @@ public final class ChronicleFormatter {
         return List.copyOf(lines);
     }
 
+    public static List<Component> inspection(LookupPage page, ChronicleClock clock, String dimension, int x, int y, int z) {
+        String coordinates = x + " " + y + " " + z;
+        if (page.rows().isEmpty())
+            return List.of(text("Chronicle: no recorded history at ", YELLOW).append(text(coordinates, WHITE)).append(text(".", YELLOW)));
+        var lines = new ArrayList<Component>();
+        lines.add(text("Inspecting ", GRAY).append(hover(text(coordinates, WHITE), dimension + " (" + x + ", " + y + ", " + z + ")")));
+        lines.addAll(page(page, clock, dimension));
+        return List.copyOf(lines);
+    }
+
+    public static Component inspector(boolean enabled) {
+        if (!enabled) return text("Chronicle inspector disabled.", YELLOW);
+        return text("Chronicle inspector ", GOLD).append(text("enabled", GREEN).withStyle(BOLD))
+                .append(text(" — left-click a block to inspect it, right-click a container or adjacent space.", GRAY));
+    }
+
     private static MutableComponent button(String label, int page, boolean enabled) {
         var button = text(label, enabled ? AQUA : DARK_GRAY);
         if (enabled) button.withStyle(style -> style.withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/chronicle page " + page)));

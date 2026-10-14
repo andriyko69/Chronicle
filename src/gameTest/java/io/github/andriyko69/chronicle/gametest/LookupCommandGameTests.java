@@ -110,7 +110,7 @@ public final class LookupCommandGameTests {
                     && line.contains("Actor UUID: " + profile.getId()) && line.contains("Old state: minecraft:air\nNew state: minecraft:emerald_block")), "Exact PLAYER placement actor, coordinates and states");
             helper.assertTrue(java.util.stream.Stream.concat(query.successful.components.stream(), page.components.stream()).map(ChatEvidence::eventId).filter(Objects::nonNull).distinct().count() == 13, "No duplicates between pages after drain");
             String health = String.join("\n", status.lines);
-            for (String metric : List.of("HEALTHY", "schema=3", "queue=", "journal backlog=", "allocated bytes=", "persisted events=", "DLQ=", "retries=", "persistence failures=", "Last flush=", "last commit=", "Database totals:"))
+            for (String metric : List.of("HEALTHY", "schema=4", "queue=", "journal backlog=", "allocated bytes=", "persisted events=", "DLQ=", "retries=", "persistence failures=", "Last flush=", "last commit=", "Database totals:"))
                 helper.assertTrue(health.contains(metric), "Status metric " + metric);
         }).thenExecute(() -> {
             var invalid = new Output(server);
