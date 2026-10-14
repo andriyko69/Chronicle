@@ -165,6 +165,15 @@ public final class ContainerSessionManager {
             if (touched) entry.setValue(new Session(session.menu, session.actor, List.copyOf(baselines)));
         }
     }
+    /** Credits every open session with its changes so far, so that a rollback planned next sees them as rows. */
+    public void checkpointAll(MinecraftServer server) {
+        if (!server.isSameThread()) throw new IllegalStateException("Container checkpoint off server thread");
+        record Watched(ServerLevel level, BlockPos position) {}
+        var watched = new LinkedHashSet<Watched>();
+        for (var session : sessions.values())
+            for (var baseline : session.baselines) watched.add(new Watched(baseline.container.level(), baseline.container.position()));
+        for (var target : watched) checkpoint(target.level(), target.position(), true);
+    }
     public void stop(MinecraftServer server) {
         if (!server.isSameThread()) throw new IllegalStateException("Container shutdown off server thread");
         for (UUID player : List.copyOf(sessions.keySet())) flush(player);

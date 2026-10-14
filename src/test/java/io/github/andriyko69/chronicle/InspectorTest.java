@@ -123,7 +123,7 @@ class InspectorTest {
             io.github.andriyko69.chronicle.storage.migration.MigrationManager.migrate(connection, NOW);
             connection.setAutoCommit(false);
             var random = new Random(5);
-            try (var insert = connection.prepareStatement("INSERT INTO audit_events VALUES (?,?,0,'minecraft:overworld',?,?,?,'BLOCK_BREAK','PLAYER','Alice',NULL,NULL,'minecraft:stone',1,X'00',NULL)")) {
+            try (var insert = connection.prepareStatement("INSERT INTO audit_events VALUES (?,?,0,'minecraft:overworld',?,?,?,'BLOCK_BREAK','PLAYER','Alice',NULL,NULL,'minecraft:stone',1,X'00',NULL,0)")) {
                 for (int i = 0; i < 200_000; i++) {
                     var id = new byte[16]; random.nextBytes(id);
                     insert.setBytes(1, id); insert.setLong(2, NOW.getEpochSecond() - i);

@@ -2,6 +2,7 @@
 package io.github.andriyko69.chronicle.listener;
 
 import io.github.andriyko69.chronicle.codec.SnapshotNbt;
+import io.github.andriyko69.chronicle.container.StorageAudit;
 import io.github.andriyko69.chronicle.event.*;
 import io.github.andriyko69.chronicle.runtime.ChronicleRuntime;
 import java.util.LinkedHashMap;
@@ -76,6 +77,7 @@ public final class PlayerBlockListener {
     }
     private void submit(ChronicleRuntime destination, ServerLevel level, BlockPos position, Player player,
             String type, BlockStateSnapshot before, BlockStateSnapshot after, SnapshotNbt nbt) {
+        StorageAudit.settleRemovedAt(level, position);
         var actor = PlayerActor.capture(player);
         var envelope = new EventEnvelope(level.dimension().location().toString(), position.getX(), position.getY(), position.getZ(),
                 type, actor.type(), actor.name(), actor.uuid(), null, type.equals("BLOCK_BREAK") ? before.blockId() : after.blockId());

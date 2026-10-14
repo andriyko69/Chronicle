@@ -7,17 +7,23 @@ import io.github.andriyko69.chronicle.codec.ItemTransactionPayloadCodec;
 import java.time.Instant;
 
 public record LookupRow(EventId id, Instant occurredAt, EventEnvelope envelope,
-        BlockStateSnapshot before, BlockStateSnapshot after, BlockDeltaPayload.SnapshotStatus nbtStatus, ItemTransactionPayload item) {
+        BlockStateSnapshot before, BlockStateSnapshot after, BlockDeltaPayload.SnapshotStatus nbtStatus, ItemTransactionPayload item,
+        boolean rolledBack) {
+    public LookupRow(EventId id, Instant occurredAt, EventEnvelope envelope,
+            BlockStateSnapshot before, BlockStateSnapshot after, BlockDeltaPayload.SnapshotStatus nbtStatus, ItemTransactionPayload item) {
+        this(id, occurredAt, envelope, before, after, nbtStatus, item, false);
+    }
     public LookupRow(EventId id, Instant occurredAt, EventEnvelope envelope,
             BlockStateSnapshot before, BlockStateSnapshot after, BlockDeltaPayload.SnapshotStatus nbtStatus) {
         this(id, occurredAt, envelope, before, after, nbtStatus, null);
     }
-    public static LookupRow decode(AuditEvent event) {
+    public static LookupRow decode(AuditEvent event) { return decode(event, false); }
+    public static LookupRow decode(AuditEvent event, boolean rolledBack) {
         if (event.envelope().eventType().equals("ITEM_TAKE") || event.envelope().eventType().equals("ITEM_PUT")) {
             var item = new ItemTransactionPayloadCodec().decode(event.payloadVersion(), event.payload());
-            return new LookupRow(event.id(), event.occurredAt(), event.envelope(), null, null, BlockDeltaPayload.SnapshotStatus.NONE, item);
+            return new LookupRow(event.id(), event.occurredAt(), event.envelope(), null, null, BlockDeltaPayload.SnapshotStatus.NONE, item, rolledBack);
         }
         var block = new BlockDeltaPayloadCodec().decode(event.payloadVersion(), event.payload());
-        return new LookupRow(event.id(), event.occurredAt(), event.envelope(), block.before(), block.after(), block.snapshotStatus());
+        return new LookupRow(event.id(), event.occurredAt(), event.envelope(), block.before(), block.after(), block.snapshotStatus(), null, rolledBack);
     }
 }

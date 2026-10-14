@@ -1,12 +1,37 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 package io.github.andriyko69.chronicle.query;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
 public record LookupSql(String sql, List<Object> parameters) {
+    private static final String NEWEST_FIRST = " ORDER BY occurred_at_sec DESC, occurred_at_nanos DESC, event_id DESC";
+    private static final String OLDEST_FIRST = " ORDER BY occurred_at_sec ASC, occurred_at_nanos ASC, event_id ASC";
     public LookupSql { parameters = List.copyOf(parameters); }
     public static LookupSql page(LookupSpec spec, int page) {
+        var query = filtered(spec);
+        query.sql.append(NEWEST_FIRST).append(" LIMIT ? OFFSET ?");
+        query.parameters.add(LookupSpec.PAGE_SIZE + 1); query.parameters.add(LookupSpec.offset(page));
+        return new LookupSql(query.sql.toString(), query.parameters);
+    }
+    /** Rollback undoes the newest change first; restore re-applies the oldest first. */
+    public static LookupSql candidates(LookupSpec spec, boolean rolledBack, int limit) {
+        var query = filtered(spec);
+        query.sql.append(" AND rolled_back = ?");
+        query.parameters.add(rolledBack ? 1 : 0);
+        query.sql.append(rolledBack ? OLDEST_FIRST : NEWEST_FIRST).append(" LIMIT ?");
+        query.parameters.add(limit);
+        return new LookupSql(query.sql.toString(), query.parameters);
+    }
+    /** One page of the rows at one coordinate from {@code from} on, oldest first; reaches the position index by equality. */
+    public static LookupSql position(String worldId, int x, int y, int z, Instant from, int limit, int offset) {
+        return new LookupSql("SELECT * FROM audit_events WHERE world_id = ? AND x = ? AND z = ? AND y = ? AND occurred_at_sec >= ?"
+                + " AND (occurred_at_sec > ? OR occurred_at_nanos >= ?)" + OLDEST_FIRST + " LIMIT ? OFFSET ?",
+                List.of(worldId, x, z, y, from.getEpochSecond(), from.getEpochSecond(), from.getNano(), limit, offset));
+    }
+    private record Query(StringBuilder sql, List<Object> parameters) {}
+    private static Query filtered(LookupSpec spec) {
         var sql = new StringBuilder("SELECT * FROM audit_events WHERE occurred_at_sec >= ? AND (occurred_at_sec > ? OR occurred_at_nanos >= ?)");
         var parameters = new ArrayList<Object>();
         parameters.add(spec.since().getEpochSecond()); parameters.add(spec.since().getEpochSecond()); parameters.add(spec.since().getNano());
@@ -33,9 +58,7 @@ public record LookupSql(String sql, List<Object> parameters) {
         }
         in(sql, parameters, "target_id", spec.targets());
         in(sql, parameters, "event_type", spec.actions());
-        sql.append(" ORDER BY occurred_at_sec DESC, occurred_at_nanos DESC, event_id DESC LIMIT ? OFFSET ?");
-        parameters.add(LookupSpec.PAGE_SIZE + 1); parameters.add(LookupSpec.offset(page));
-        return new LookupSql(sql.toString(), parameters);
+        return new Query(sql, parameters);
     }
     // A BETWEEN, even with equal ends, is a range to SQLite and stops index seeks; equality reaches the time order.
     private static void axis(StringBuilder sql, List<Object> parameters, String column, int min, int max) {

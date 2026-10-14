@@ -4,6 +4,8 @@ package io.github.andriyko69.chronicle.command;
 import io.github.andriyko69.chronicle.diagnostics.*;
 import io.github.andriyko69.chronicle.event.*;
 import io.github.andriyko69.chronicle.query.*;
+import io.github.andriyko69.chronicle.rollback.RollbackEngine;
+import io.github.andriyko69.chronicle.rollback.RollbackPlan;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -79,28 +81,30 @@ public final class ChronicleFormatter {
                 .append(text(added ? "+" : "-", added ? GREEN : RED).withStyle(BOLD))
                 .append(text(" ", GRAY)).append(actor);
         if (e.actorType().equals("FAKE_PLAYER")) line.append(text(" [Fake]", GOLD));
+        String status = row.rolledBack() ? "\nStatus: Rolled back" : "";
         if (row.item() == null) {
-            line.append(text(added ? " placed " : " broke ", GRAY));
-            var target = text(shortId(e.targetId()), AQUA);
+            line.append(struck(text(added ? " placed " : " broke ", GRAY), row));
+            var target = struck(text(shortId(e.targetId()), AQUA), row);
             if (row.nbtStatus() != BlockDeltaPayload.SnapshotStatus.NONE) {
                 target.append(text(row.nbtStatus() == BlockDeltaPayload.SnapshotStatus.PRESENT ? " [NBT]"
                         : " [NBT:" + row.nbtStatus().name().toLowerCase(Locale.ROOT) + "]",
                         row.nbtStatus() == BlockDeltaPayload.SnapshotStatus.PRESENT ? DARK_AQUA : RED));
             }
             line.append(hover(target, "Target: " + e.targetId() + "\nOld state: " + state(row.before())
-                    + "\nNew state: " + state(row.after()) + "\nNBT snapshot: " + row.nbtStatus()));
+                    + "\nNew state: " + state(row.after()) + "\nNBT snapshot: " + row.nbtStatus() + status));
         } else {
             var item = row.item();
-            line.append(text(added ? " put " : " took ", GRAY));
-            var target = text("×" + item.count() + " " + shortId(e.targetId()), AQUA);
+            line.append(struck(text(added ? " put " : " took ", GRAY), row));
+            var target = struck(text("×" + item.count() + " " + shortId(e.targetId()), AQUA), row);
             if (item.customName() != null) target.append(text(" (\"" + compactName(item.customName()) + "\")", YELLOW).withStyle(ITALIC));
             if (!item.enchantments().isEmpty() || item.damage() != null) target.append(text(" ✦", LIGHT_PURPLE));
             line.append(hover(target, "Item: " + e.targetId() + "\nCount: " + item.count() + "\nContainer: " + item.containerBlockId()
                     + "\nCustom name: " + (item.customName() == null ? "none" : safeName(item.customName()))
                     + "\nEnchantments: " + item.enchantments() + "\nDamage: " + (item.damage() == null ? "none" : item.damage())
-                    + "\nComponents: " + item.componentSnapshotStatus()));
+                    + "\nComponents: " + item.componentSnapshotStatus() + status));
             line.append(text(added ? " in " : " from ", GRAY)).append(text(shortId(item.containerBlockId()), WHITE));
         }
+        if (row.rolledBack()) line.append(hover(text(" [RB]", DARK_GRAY), "Status: Rolled back\nRestore with /chronicle restore"));
         String coordinates = e.x() + " " + e.y() + " " + e.z();
         var location = hover(text(" @ ", DARK_GRAY).append(text(
                 (e.worldId().equals(viewerDimension) ? "" : shortId(e.worldId()) + " ") + coordinates, GRAY)),
@@ -108,6 +112,56 @@ public final class ChronicleFormatter {
         location.withStyle(style -> style.withClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND,
                 "/execute in " + e.worldId() + " run tp @s " + coordinates)));
         return line.append(location);
+    }
+
+    private static MutableComponent struck(MutableComponent text, LookupRow row) {
+        return row.rolledBack() ? text.withStyle(STRIKETHROUGH) : text;
+    }
+
+    public static List<Component> rollbackPreview(RollbackPlan plan) {
+        String verb = plan.restore() ? "restore" : "roll back";
+        if (plan.steps().isEmpty()) return withQuarantine(plan, nothingTo(plan.restore()));
+        return withQuarantine(plan, text("── Chronicle " + (plan.restore() ? "Restore" : "Rollback") + " Preview ──", GOLD),
+                text("Would " + verb + " ", GRAY).append(text(plan.blockChanges() + " block changes", AQUA)).append(text(" and ", GRAY))
+                        .append(text(plan.itemChanges() + " item changes", AQUA)).append(text(".", GRAY)),
+                hover(text(plan.spillRows() + " container spill rows travel with their breaks.", GRAY),
+                        "A rolled-back break restores its saved contents once;\nspill rows are only re-inserted when no snapshot was restored."),
+                text("Nothing was changed. Run again without --preview to apply.", YELLOW));
+    }
+
+    /** Matching rows an interrupted rollback may already have applied are never planned until an operator releases them. */
+    public static List<Component> withQuarantine(RollbackPlan plan, Component... lines) {
+        var result = new ArrayList<>(List.of(lines));
+        if (plan.quarantined() > 0) result.add(hover(text(plan.quarantined() + " matching changes are quarantined and were left out.", RED),
+                "An earlier rollback applied them but could not record it.\nReview them, then delete rollback-quarantine.txt\nnext to Chronicle's database to release them."));
+        return List.copyOf(result);
+    }
+
+    public static Component nothingTo(boolean restore) {
+        return text("Chronicle: no matching changes to " + (restore ? "restore" : "roll back") + ".", YELLOW);
+    }
+
+    public static Component rollbackStarted(RollbackPlan plan) {
+        return text((plan.restore() ? "Restoring " : "Rolling back ") + plan.operations() + " changes", GOLD)
+                .append(text(" (" + plan.blockChanges() + " blocks, " + plan.itemChanges() + " items) at up to "
+                        + RollbackEngine.OPERATIONS_PER_TICK + " per tick…", GRAY));
+    }
+
+    public static List<Component> rollbackReport(RollbackEngine.Report report) {
+        String kind = report.restore() ? "Restore" : "Rollback";
+        var lines = new ArrayList<Component>();
+        lines.add(report.failure() == null ? text("── Chronicle " + kind + " complete ──", GOLD)
+                : text("── Chronicle " + kind + " stopped: " + report.failure() + " ──", RED));
+        lines.add(metrics("Applied", "blocks", report.blocks(), "items", report.items(), "spill rows covered by snapshots", report.covered()));
+        if (report.emptied() > 0)
+            lines.add(hover(text("Emptied " + report.emptied() + " replaced containers of items this request did not cover", YELLOW),
+                    "Their remaining contents were cleared, not dropped; see the server log for positions."));
+        if (report.skippedTotal() > 0) {
+            String reasons = report.skipped().entrySet().stream().map(entry -> entry.getKey() + ": " + entry.getValue())
+                    .collect(Collectors.joining("\n"));
+            lines.add(hover(text("Skipped " + report.skippedTotal() + " changes (left as they are; hover for reasons)", YELLOW), reasons));
+        }
+        return List.copyOf(lines);
     }
 
     private static String relativeTime(long seconds) {

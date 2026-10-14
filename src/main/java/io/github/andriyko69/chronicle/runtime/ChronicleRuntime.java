@@ -10,14 +10,26 @@ import io.github.andriyko69.chronicle.journal.*;
 import io.github.andriyko69.chronicle.journal.openhft.ChronicleQueueJournal;
 import io.github.andriyko69.chronicle.persistence.*;
 import io.github.andriyko69.chronicle.query.*;
+import io.github.andriyko69.chronicle.rollback.RollbackPlan;
+import io.github.andriyko69.chronicle.rollback.RollbackPlanner;
 import io.github.andriyko69.chronicle.storage.*;
 import io.github.andriyko69.chronicle.storage.sqlite.SQLiteStorageBackend;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
@@ -27,6 +39,9 @@ public final class ChronicleRuntime implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(ChronicleRuntime.class);
     private record Pending(EncodedAuditEvent event, CompletableFuture<JournalPosition> acknowledgement) {}
     private record Appended(JournalPosition position, CompletableFuture<JournalPosition> acknowledgement) {}
+    private record RollbackStateUpdate(List<EventId> ids, boolean rolledBack, CompletableFuture<Void> done) {}
+    /** How long rollback planning waits for already-admitted events to become queryable. */
+    static final Duration SETTLE_TIMEOUT = Duration.ofSeconds(10);
     private final InfrastructureConfig config;
     private final ChronicleClock clock;
     private final StorageBackend backend;
@@ -44,6 +59,14 @@ public final class ChronicleRuntime implements AutoCloseable {
     private final ThreadPoolExecutor queries;
     private final Set<CompletableFuture<?>> queryResults = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean started = new AtomicBoolean();
+    /** Rollback state shares the one SQLite writer connection, so it never contends with batch commits for the lock. */
+    private final ConcurrentLinkedQueue<RollbackStateUpdate> rollbackStates = new ConcurrentLinkedQueue<>();
+    private boolean rollbackStatesClosed;
+    /** Ingress is FIFO: once {@code appended} reaches an admission count, every event admitted before it is journaled. */
+    private final AtomicLong admitted = new AtomicLong();
+    private volatile long appended;
+    private volatile long appendedPosition = JournalPosition.NONE.value();
+    private final Object quarantineLock = new Object();
     private volatile boolean accepting;
     private volatile boolean closing;
     private volatile boolean closed;
@@ -77,7 +100,8 @@ public final class ChronicleRuntime implements AutoCloseable {
             if (journalFailure != null || fatalStorage != null) status = Submission.Status.UNHEALTHY;
             else if (closing) status = Submission.Status.STOPPED;
             else if (!accepting) status = Submission.Status.NOT_READY;
-            else status = ingress.offer(new Pending(encoded, acknowledgement)) ? Submission.Status.ACCEPTED : Submission.Status.QUEUE_FULL;
+            else if (ingress.offer(new Pending(encoded, acknowledgement))) { admitted.incrementAndGet(); status = Submission.Status.ACCEPTED; }
+            else status = Submission.Status.QUEUE_FULL;
         }
         if (status != Submission.Status.ACCEPTED) {
             metrics.droppedEvents.incrementAndGet();
@@ -93,6 +117,74 @@ public final class ChronicleRuntime implements AutoCloseable {
     public CompletionStage<LookupPage> lookup(LookupSpec spec, int page) {
         LookupSpec.offset(page);
         return query(reader -> reader.lookup(spec, page));
+    }
+    /**
+     * Plans against storage that already holds every event admitted before this call, so a change made just before
+     * the command is never missed. Called on the server thread, which is where audit events are admitted.
+     */
+    public CompletionStage<RollbackPlan> planRollback(LookupSpec spec, boolean restore) {
+        long admittedBefore = admitted.get();
+        return query(reader -> {
+            awaitPersisted(admittedBefore);
+            return RollbackPlanner.plan(reader, spec, restore, quarantined());
+        });
+    }
+    /**
+     * Rows whose world change was applied but whose rolled-back state could not be recorded. Re-planning them could apply
+     * the change twice, so they stay excluded from rollback and restore until an operator reviews and deletes the file.
+     */
+    public Path quarantineFile() { return config.database().toAbsolutePath().resolveSibling("rollback-quarantine.txt"); }
+    public void quarantine(List<EventId> ids, boolean rolledBack) throws IOException {
+        var lines = new StringBuilder();
+        for (var id : ids) lines.append(id).append(' ').append(rolledBack ? 1 : 0).append('\n');
+        synchronized (quarantineLock) {
+            Files.createDirectories(quarantineFile().getParent());
+            try (var channel = FileChannel.open(quarantineFile(), StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
+                var bytes = ByteBuffer.wrap(lines.toString().getBytes(StandardCharsets.UTF_8));
+                while (bytes.hasRemaining()) channel.write(bytes);
+                channel.force(true);
+            }
+        }
+    }
+    private Set<EventId> quarantined() {
+        synchronized (quarantineLock) {
+            if (!Files.exists(quarantineFile())) return Set.of();
+            try {
+                var ids = new HashSet<EventId>();
+                for (String line : Files.readAllLines(quarantineFile(), StandardCharsets.UTF_8))
+                    if (!line.isBlank()) ids.add(new EventId(UUID.fromString(line.strip().split("\\s+")[0])));
+                return ids;
+            } catch (IOException | RuntimeException failure) {
+                throw new RollbackPlanner.Rejected("Cannot read " + quarantineFile() + "; no rollback can be planned until it is readable");
+            }
+        }
+    }
+    /** Committed on the persistence worker between journal batches; completes once durable. */
+    public CompletionStage<Void> setRolledBack(List<EventId> ids, boolean rolledBack) {
+        var done = new CompletableFuture<Void>();
+        boolean admittedUpdate = false;
+        synchronized (rollbackStates) {
+            if (!rollbackStatesClosed && ready.isDone() && !ready.isCompletedExceptionally() && !closing && fatalStorage == null && journalFailure == null) {
+                rollbackStates.add(new RollbackStateUpdate(List.copyOf(ids), rolledBack, done));
+                admittedUpdate = true;
+            }
+        }
+        if (!admittedUpdate) done.completeExceptionally(new RejectedExecutionException("Chronicle storage unavailable"));
+        return done.minimalCompletionStage();
+    }
+    private void awaitPersisted(long admittedBefore) throws StorageFailure {
+        long deadline = System.nanoTime() + SETTLE_TIMEOUT.toNanos();
+        while (appended < admittedBefore) settling(deadline);
+        long position = appendedPosition;
+        while (metrics.committedPosition < position) settling(deadline);
+    }
+    private void settling(long deadline) throws StorageFailure {
+        if (journalFailure != null || fatalStorage != null || closing)
+            throw new StorageFailure(StorageFailure.Kind.TRANSIENT, "Chronicle persistence is unavailable", "NOT_SETTLED", null);
+        if (System.nanoTime() >= deadline)
+            throw new StorageFailure(StorageFailure.Kind.TRANSIENT, "Recent events are not yet persisted; try again shortly", "NOT_SETTLED", null);
+        if (Thread.currentThread().isInterrupted()) throw new StorageFailure(StorageFailure.Kind.TRANSIENT, "Interrupted", "NOT_SETTLED", null);
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
     }
     public CompletionStage<ChronicleStatus> status() {
         return query(reader -> new ChronicleStatus(diagnostics(), reader.totals()));
@@ -153,6 +245,7 @@ public final class ChronicleRuntime implements AutoCloseable {
                 if (pending != null) {
                     try {
                         JournalPosition position = journal.append(pending.event());
+                        appendedPosition = position.value(); appended++;
                         waiting.add(new Appended(position, pending.acknowledgement()));
                         metrics.journalAppends.incrementAndGet();
                         if (metrics.oldestUncommitted == null) metrics.oldestUncommitted = clock.now();
@@ -234,12 +327,13 @@ public final class ChronicleRuntime implements AutoCloseable {
                         ready.complete(null);
                         LOG.info("Chronicle ready: schema={}, checkpoint={}, replay backlog={}", metrics.schemaVersion, metrics.committedPosition, metrics.backlog);
                     }
+                    applyRollbackStates(writer);
                     if (pending.isEmpty()) {
                         JournalRecord first = cursor.next();
                         if (first == null) {
                             metrics.backlog = journal.backlog(checkpoint.terminalRecords());
                             if (metrics.backlog == 0) metrics.oldestUncommitted = null;
-                            if (journalDrained.isDone() && journal.lastPosition().equals(checkpoint.position())) break;
+                            if (journalDrained.isDone() && journal.lastPosition().equals(checkpoint.position()) && rollbackStates.isEmpty()) break;
                             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1)); continue;
                         }
                         pending.add(first);
@@ -296,9 +390,27 @@ public final class ChronicleRuntime implements AutoCloseable {
                 LOG.error("Chronicle fatal persistence failure; progress halted and journal preserved", failure);
             }
         } finally {
+            synchronized (rollbackStates) {
+                rollbackStatesClosed = true;
+                RollbackStateUpdate abandoned;
+                while ((abandoned = rollbackStates.poll()) != null)
+                    abandoned.done().completeExceptionally(new CancellationException("Chronicle stopped before recording rollback state"));
+            }
             if (cursor != null) try { cursor.close(); } catch (Throwable failure) { journalFailure = failure; }
             if (writer != null) try { writer.close(); } catch (Throwable failure) { fatalStorage = failure; }
             persistenceStopped.complete(null);
+        }
+    }
+    /** A transient failure leaves the update queued for the reconnected writer; a fatal one halts persistence like a commit. */
+    private void applyRollbackStates(StorageWriter writer) throws StorageFailure {
+        RollbackStateUpdate update;
+        while ((update = rollbackStates.peek()) != null) {
+            try { writer.setRolledBack(update.ids(), update.rolledBack()); }
+            catch (StorageFailure failure) {
+                if (failure.kind() != StorageFailure.Kind.PERMANENT_EVENT) throw failure;
+                rollbackStates.poll(); update.done().completeExceptionally(failure); continue;
+            } catch (RuntimeException failure) { rollbackStates.poll(); update.done().completeExceptionally(failure); continue; }
+            rollbackStates.poll(); update.done().complete(null);
         }
     }
     private boolean expired() { return closing && System.nanoTime() >= shutdownDeadline; }

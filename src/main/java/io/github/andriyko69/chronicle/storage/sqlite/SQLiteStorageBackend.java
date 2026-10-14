@@ -199,6 +199,25 @@ public final class SQLiteStorageBackend implements StorageBackend {
                 throw failure;
             }
         }
+        @Override public void setRolledBack(List<EventId> ids, boolean rolledBack) throws StorageFailure {
+            owned();
+            if (ids.isEmpty()) return;
+            try {
+                connection.setAutoCommit(false);
+                boolean complete = true;
+                try (var update = connection.prepareStatement("UPDATE audit_events SET rolled_back=? WHERE event_id=?")) {
+                    for (var id : ids) { update.setInt(1, rolledBack ? 1 : 0); update.setBytes(2, uuidBytes(id.value())); update.addBatch(); }
+                    for (int changed : update.executeBatch()) complete &= changed == 1;
+                }
+                // A missing target is a caller error, not a storage fault; it must not halt journal persistence.
+                if (!complete) connection.rollback();
+                connection.setAutoCommit(true);
+                if (!complete) throw new StorageFailure(StorageFailure.Kind.PERMANENT_EVENT, "Rollback state target is not a stored audit event", null, null);
+            } catch (SQLException failure) {
+                try { connection.close(); } catch (SQLException close) { failure.addSuppressed(close); }
+                throw SQLiteFailureClassifier.classify(failure);
+            }
+        }
         private void insertDeadLetter(TerminalRecord record, DeadLetterRecord deadLetter) throws SQLException {
             try (var insert = connection.prepareStatement("INSERT INTO dead_letters VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")) {
                 insert.setString(1, record.journal().event().id().toString()); insert.setLong(2, record.journal().position().value());
@@ -218,6 +237,7 @@ public final class SQLiteStorageBackend implements StorageBackend {
 
     private static final class Reader implements StorageReader {
         private static final long QUERY_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+        private static final long ROLLBACK_QUERY_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
         private final Connection connection;
         private final Thread owner = Thread.currentThread();
         private long deadline;
@@ -236,9 +256,10 @@ public final class SQLiteStorageBackend implements StorageBackend {
                 throw SQLiteFailureClassifier.classify(failure);
             }
         }
-        private void beginQuery() {
+        private void beginQuery() { beginQuery(QUERY_NANOS); }
+        private void beginQuery(long budget) {
             if (Thread.currentThread() != owner) throw new IllegalStateException("Reader used off its owning thread");
-            deadline = System.nanoTime() + QUERY_NANOS;
+            deadline = System.nanoTime() + budget;
             interrupted = false;
         }
         private StorageFailure queryFailure(SQLException failure) {
@@ -250,22 +271,43 @@ public final class SQLiteStorageBackend implements StorageBackend {
             beginQuery();
             var query = LookupSql.page(spec, page);
             var values = new ArrayList<LookupRow>();
-            try (var select = connection.prepareStatement(query.sql())) {
-                for (int i = 0; i < query.parameters().size(); i++) {
-                    Object value = query.parameters().get(i);
-                    if (value instanceof UUID id) select.setBytes(i + 1, uuidBytes(id));
-                    else select.setObject(i + 1, value);
-                }
+            try (var select = prepare(query)) {
                 try (var rows = select.executeQuery()) {
-                    while (rows.next()) {
-                        var event = domainEvent(rows);
-                        values.add(LookupRow.decode(event));
-                    }
+                    while (rows.next()) values.add(LookupRow.decode(domainEvent(rows), rows.getInt("rolled_back") == 1));
                 }
                 boolean more = values.size() > LookupSpec.PAGE_SIZE;
                 return new LookupPage(page, values.subList(0, Math.min(values.size(), LookupSpec.PAGE_SIZE)), more);
             } catch (SQLException failure) { throw queryFailure(failure); }
             catch (RuntimeException failure) { throw fatal("Corrupt stored lookup payload", failure); }
+        }
+        @Override public List<StoredEvent> candidates(LookupSpec spec, boolean rolledBack, int limit) throws StorageFailure {
+            beginQuery(ROLLBACK_QUERY_NANOS);
+            return stored(LookupSql.candidates(spec, rolledBack, limit));
+        }
+        @Override public List<StoredEvent> position(String worldId, int x, int y, int z, Instant from, int limit, int offset) throws StorageFailure {
+            beginQuery();
+            return stored(LookupSql.position(worldId, x, y, z, from, limit, offset));
+        }
+        private List<StoredEvent> stored(LookupSql query) throws StorageFailure {
+            var values = new ArrayList<StoredEvent>();
+            try (var select = prepare(query); var rows = select.executeQuery()) {
+                while (rows.next()) values.add(new StoredEvent(domainEvent(rows), rows.getInt("rolled_back") == 1));
+                return values;
+            } catch (SQLException failure) { throw queryFailure(failure); }
+        }
+        private PreparedStatement prepare(LookupSql query) throws SQLException {
+            var select = connection.prepareStatement(query.sql());
+            try {
+                for (int i = 0; i < query.parameters().size(); i++) {
+                    Object value = query.parameters().get(i);
+                    if (value instanceof UUID id) select.setBytes(i + 1, uuidBytes(id));
+                    else select.setObject(i + 1, value);
+                }
+                return select;
+            } catch (SQLException failure) {
+                try { select.close(); } catch (SQLException close) { failure.addSuppressed(close); }
+                throw failure;
+            }
         }
         @Override public StorageTotals totals() throws StorageFailure {
             beginQuery();

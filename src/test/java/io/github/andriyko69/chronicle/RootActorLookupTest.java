@@ -117,7 +117,7 @@ class RootActorLookupTest {
             }
         }
         try (var connection = PersistenceTest.connection(database)) { MigrationManager.migrate(connection, Instant.now()); }
-        assertEquals(5, PersistenceTest.scalar(database, "PRAGMA user_version"));
+        assertEquals(6, PersistenceTest.scalar(database, "PRAGMA user_version"));
         assertEquals(4, PersistenceTest.scalar(database, "SELECT count(*) FROM audit_events"));
         assertEquals(4, PersistenceTest.scalar(database, "SELECT count(*) FROM schema_migrations WHERE applied_at='baseline'"));
         try (var connection = PersistenceTest.connection(database); var rows = connection.createStatement().executeQuery("SELECT checksum FROM schema_migrations WHERE version <= 4 ORDER BY version")) {
@@ -127,6 +127,6 @@ class RootActorLookupTest {
         assertEquals(2, PersistenceTest.scalar(database, "SELECT count(*) FROM sqlite_master WHERE name IN ('idx_events_root_actor_time','idx_events_actor_uuid_time')"));
         assertEquals(1, PersistenceTest.scalar(database, "SELECT count(*) FROM pragma_table_info('audit_events') WHERE name='root_actor_id'"));
         try (var connection = PersistenceTest.connection(database)) { MigrationManager.migrate(connection, Instant.now()); }
-        assertEquals(5, PersistenceTest.scalar(database, "SELECT count(*) FROM schema_migrations"));
+        assertEquals(6, PersistenceTest.scalar(database, "SELECT count(*) FROM schema_migrations"));
     }
 }

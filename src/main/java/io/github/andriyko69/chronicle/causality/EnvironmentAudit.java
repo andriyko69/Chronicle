@@ -525,6 +525,7 @@ public final class EnvironmentAudit {
             BlockStateSnapshot after, String target, SnapshotNbt nbt, Instant at) {
         var destination = runtime.get();
         if (destination == null) return;
+        StorageAudit.settleRemovedAt(level, pos);
         var envelope = new EventEnvelope(dimension(level), pos.getX(), pos.getY(), pos.getZ(), type,
                 actor.type(), actor.id(), actor.uuid(), actor.rootUuid(), actor.rootName(), target);
         var payload = new BlockDeltaPayload(before, after, BlockDeltaPayload.Observation.HOOK_OBSERVATION, nbt.status(), nbt.bytes());

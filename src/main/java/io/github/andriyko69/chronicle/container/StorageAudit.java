@@ -66,6 +66,8 @@ public final class StorageAudit {
         }
         boolean idle() { return remover == null && clicker == null && supportLoss == null && watches.isEmpty(); }
     }
+    /** Every registered audit (the mod's, and the GameTest mod's) must exclude Chronicle's own mutations. */
+    private static final List<StorageAudit> REGISTERED = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final Map<Object, Observation> observations = new IdentityHashMap<>();
     private final Supplier<ChronicleRuntime> runtime;
     private final ChronicleClock clock;
@@ -77,6 +79,7 @@ public final class StorageAudit {
         containers.beforeFlush(this::resolveRemovals);
     }
     public void register() {
+        REGISTERED.add(this);
         NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::breaking);
         NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::clickedBlock);
         NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::clickedEntity);
@@ -197,6 +200,55 @@ public final class StorageAudit {
      */
     public void automating(ServerLevel level, BlockPos pos, boolean record) {
         if (owned(level)) containers.checkpoint(level, pos, record);
+    }
+
+    /**
+     * Brackets a rollback or restore of the storage {@code identity} (a block entity or entity, or null) whose menu
+     * sessions are keyed at {@code sessionPosition} (or null). Before the mutation, observers and open-menu viewers are
+     * credited with their own changes so far; after it they are rebaselined without rows, so nobody is credited with or
+     * blamed for the rollback's items. Storage the mutation removed is forgotten rather than settled as a spill.
+     */
+    public static void externalChange(ServerLevel level, BlockPos sessionPosition, Object identity, boolean before) {
+        if (!level.getServer().isSameThread()) throw new IllegalStateException("Storage mutation off server thread");
+        for (var audit : REGISTERED) audit.external(level, sessionPosition, identity, before);
+    }
+
+    /**
+     * A block row is about to be recorded at {@code pos}. Storage already removed there spills first, so its rows precede
+     * a replacement placed before the tick boundary: rollback pairs a spill with the break it follows, up to the next
+     * block change at that position.
+     */
+    public static void settleRemovedAt(ServerLevel level, BlockPos pos) {
+        for (var audit : REGISTERED) audit.settleRemoved(level, pos);
+    }
+
+    private void settleRemoved(ServerLevel level, BlockPos pos) {
+        if (!owned(level) || observations.isEmpty()) return;
+        for (var observation : List.copyOf(observations.values())) {
+            var holder = observation.holder;
+            if (holder instanceof StorageHolder.Block && holder.level() == level && holder.position().equals(pos)
+                    && holder.presence() == StorageHolder.Presence.DESTROYED) settleOrDrop(observation);
+        }
+    }
+
+    /** Before a rollback is planned: open menus record their pending changes, which would otherwise surface mid-rollback. */
+    public static void checkpointViewers(MinecraftServer server) {
+        for (var audit : REGISTERED) audit.containers.checkpointAll(server);
+    }
+
+    private void external(ServerLevel level, BlockPos sessionPosition, Object identity, boolean before) {
+        var observation = identity == null ? null : observations.get(identity);
+        try {
+            if (observation != null) {
+                if (before) { if (!settle(observation)) observations.remove(identity, observation); }
+                else if (observation.holder.presence() == StorageHolder.Presence.PRESENT) observation.baseline = observation.holder.snapshot();
+                else observations.remove(identity, observation);
+            }
+        } catch (RuntimeException failure) {
+            observations.remove(identity, observation);
+            LOG.warn("Chronicle failed to checkpoint {} storage around a rollback; observation dropped", observation.holder.storageId(), failure);
+        }
+        if (sessionPosition != null) containers.checkpoint(level, sessionPosition, before);
     }
 
     private boolean owned(ServerLevel level) { return level.getServer().isSameThread() && runtime.get() != null; }

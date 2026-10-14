@@ -46,7 +46,7 @@ class ContainerLookupIntegrationTest {
             assertEquals(take.envelope(), row.envelope());
             assertEquals(ChronicleHealth.HEALTHY, runtime.health());
         }
-        assertEquals(5, PersistenceTest.scalar(config.database(), "PRAGMA user_version"));
+        assertEquals(6, PersistenceTest.scalar(config.database(), "PRAGMA user_version"));
         assertEquals(5, PersistenceTest.scalar(config.database(), "SELECT terminal_records FROM journal_checkpoint"));
         try (var runtime = new ChronicleRuntime(config, CLOCK, "restart")) {
             runtime.start().toCompletableFuture().get(10, TimeUnit.SECONDS);

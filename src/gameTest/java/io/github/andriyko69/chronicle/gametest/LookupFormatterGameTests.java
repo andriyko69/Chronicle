@@ -5,6 +5,7 @@ import io.github.andriyko69.chronicle.command.ChronicleFormatter;
 import io.github.andriyko69.chronicle.diagnostics.*;
 import io.github.andriyko69.chronicle.event.*;
 import io.github.andriyko69.chronicle.query.*;
+import io.github.andriyko69.chronicle.rollback.*;
 import java.time.Instant;
 import java.util.*;
 import net.minecraft.ChatFormatting;
@@ -25,6 +26,8 @@ public final class LookupFormatterGameTests {
         tests.statusDashboardColorsAllHealthStatesAndBacklogWithoutHidingFailures();
         tests.itemStatusesAndSanitizedNames();
         tests.causalRowsShowRootActorAndCopyItsUuid();
+        tests.rolledBackRowsAreMarkedWhileOthersRenderUnchanged();
+        tests.rollbackPreviewAndReportSummaries();
         helper.succeed();
     }
     private static void assertTrue(boolean value) { assertTrue(value, "Expected true"); }
@@ -172,6 +175,52 @@ public final class LookupFormatterGameTests {
         }
         metrics.backlog = 1;
         color(node(ChronicleFormatter.runtimeStatus(metrics.snapshot(ChronicleHealth.HEALTHY, 0, CLOCK)).getFirst(), "STORAGE_BACKLOG"), ChatFormatting.YELLOW);
+    }
+    private void rolledBackRowsAreMarkedWhileOthersRenderUnchanged() {
+        var live = block("BLOCK_BREAK", 18, "PLAYER", null, "minecraft:chest", BlockDeltaPayload.SnapshotStatus.PRESENT);
+        var undone = new LookupRow(live.id(), live.occurredAt(), live.envelope(), live.before(), live.after(), live.nbtStatus(), null, true);
+        var plain = row(live, "minecraft:overworld");
+        assertEquals("18s ago - Alice broke chest [NBT] @ -65 63 -43", plain.getString());
+        assertFalse(ChatEvidence.text(plain).contains("Rolled back"));
+        assertTrue(nodes(plain).stream().noneMatch(node -> node.getStyle().isStrikethrough()));
+        var marked = row(undone, "minecraft:overworld");
+        assertEquals("18s ago - Alice broke chest [NBT] [RB] @ -65 63 -43", marked.getString());
+        assertTrue(node(marked, " broke ").getStyle().isStrikethrough());
+        assertTrue(node(marked, "chest [NBT]").getStyle().isStrikethrough());
+        color(node(marked, " [RB]"), ChatFormatting.DARK_GRAY);
+        assertTrue(ChatEvidence.text(node(marked, " [RB]")).contains("Status: Rolled back"));
+        assertTrue(ChatEvidence.text(node(marked, "chest [NBT]")).contains("NBT snapshot: PRESENT\nStatus: Rolled back"));
+        var envelope = new EventEnvelope("minecraft:overworld", 1, 2, 3, "ITEM_TAKE", "PLAYER", "Alice", null, null, "minecraft:diamond");
+        var item = new ItemTransactionPayload(10, "minecraft:chest", null, new TreeMap<>(), null, ItemTransactionPayload.ComponentSnapshotStatus.NONE, null);
+        var taken = row(LookupRow.decode(AuditEvent.item(EventId.generate(), NOW, envelope, item), true), "minecraft:overworld");
+        assertTrue(taken.getString().contains("took ×10 diamond from chest [RB] @ 1 2 3"), taken.getString());
+        assertTrue(ChatEvidence.text(taken).contains("Components: NONE\nStatus: Rolled back"));
+        assertTrue(ChatEvidence.text(ChronicleFormatter.inspection(new LookupPage(1, List.of(undone), false), CLOCK, "minecraft:overworld", -65, 63, -43)
+                .getLast()).contains("Status: Rolled back"), "Inspector rows use the same marking");
+    }
+    private void rollbackPreviewAndReportSummaries() {
+        var breakRow = AuditEvent.block(EventId.generate(), NOW, new EventEnvelope("minecraft:overworld", 1, 2, 3, "BLOCK_BREAK", "PLAYER", "Alice",
+                null, null, "minecraft:chest"), new BlockDeltaPayload(new BlockStateSnapshot("minecraft:chest", Map.of()), BlockStateSnapshot.AIR,
+                BlockDeltaPayload.Observation.HOOK_OBSERVATION, BlockDeltaPayload.SnapshotStatus.NONE, null));
+        var spill = AuditEvent.item(EventId.generate(), NOW, new EventEnvelope("minecraft:overworld", 1, 2, 3, "ITEM_TAKE", "PLAYER", "Alice",
+                null, null, "minecraft:diamond"), new ItemTransactionPayload(10, "minecraft:chest", null, new TreeMap<>(), null,
+                ItemTransactionPayload.ComponentSnapshotStatus.NONE, null));
+        var plan = new RollbackPlan(false, List.of(new RollbackPlan.Step(breakRow, List.of(spill)), new RollbackPlan.Step(spill, List.of())));
+        String preview = ChronicleFormatter.rollbackPreview(plan).stream().map(Component::getString).collect(java.util.stream.Collectors.joining("\n"));
+        for (String fragment : List.of("Rollback Preview", "Would roll back 1 block changes and 2 item changes.", "1 container spill rows", "Nothing was changed"))
+            assertTrue(preview.contains(fragment), fragment);
+        assertEquals("Chronicle: no matching changes to restore.", ChronicleFormatter.rollbackPreview(new RollbackPlan(true, List.of())).getFirst().getString());
+        assertEquals(1, ChronicleFormatter.rollbackPreview(new RollbackPlan(true, List.of())).size());
+        var held = ChronicleFormatter.rollbackPreview(new RollbackPlan(false, List.of(), 3));
+        assertEquals("3 matching changes are quarantined and were left out.", held.getLast().getString());
+        assertTrue(ChatEvidence.text(held.getLast()).contains("rollback-quarantine.txt"));
+        var report = ChronicleFormatter.rollbackReport(new RollbackEngine.Report(true, 5, 2, 1, 1, 0, Map.of("storage missing", 1), null));
+        assertEquals("── Chronicle Restore complete ──", report.getFirst().getString());
+        assertTrue(report.get(1).getString().contains("blocks=2 · items=1 · spill rows covered by snapshots=1"));
+        assertTrue(ChatEvidence.text(report.getLast()).contains("Skipped 1 changes") && ChatEvidence.text(report.getLast()).contains("storage missing: 1"));
+        var stopped = ChronicleFormatter.rollbackReport(new RollbackEngine.Report(false, 5, 0, 0, 0, 0, Map.of(), "server stopping"));
+        color(stopped.getFirst(), ChatFormatting.RED);
+        assertEquals(2, stopped.size());
     }
     private void itemStatusesAndSanitizedNames() {
         for (var status : ItemTransactionPayload.ComponentSnapshotStatus.values()) {

@@ -57,6 +57,25 @@ class LookupParserTest {
         }
         assertThrows(IllegalArgumentException.class, () -> parser.parse("x".repeat(2049), PLAYER));
     }
+    @Test void rollbackReusesLookupFiltersWithPreviewAndRequiresBoundedGlobalScope() {
+        var defaults = parser.parseRollback("", PLAYER);
+        assertFalse(defaults.preview());
+        assertEquals(parser.parse("", PLAYER), defaults.spec(), "A player's rollback defaults like a lookup");
+        for (String flag : List.of("--preview", "preview")) {
+            var preview = parser.parseRollback("u:Alice " + flag + " a:block", PLAYER);
+            assertTrue(preview.preview());
+            assertEquals(parser.parse("u:Alice a:block", PLAYER), preview.spec());
+        }
+        var console = LookupParser.Context.console();
+        for (String text : List.of("r:global t:10m", "r:global u:Alice", "r:global u:Alice b:chest --preview", "dim:overworld at:1,2,3"))
+            assertNotNull(parser.parseRollback(text, console).spec());
+        for (String text : List.of("", "--preview", "r:global b:chest", "r:global a:block", "r:global", "t:1h", "u:Alice", "--preview --preview u:Alice r:global")) {
+            var error = assertThrows(IllegalArgumentException.class, () -> parser.parseRollback(text, console), text);
+            assertFalse(error.getMessage().isBlank());
+        }
+        assertThrows(IllegalArgumentException.class, () -> parser.parseRollback("r:global b:stone", PLAYER), "World-wide needs t: or u:");
+        assertThrows(IllegalArgumentException.class, () -> parser.parseRollback("preview preview", PLAYER));
+    }
     @Test void spatialBoundsDoNotWrapAtIntegerEdges() {
         var spec = parser.parse("at:2147483647,-2147483648,0 r:100", PLAYER);
         assertEquals(Integer.MAX_VALUE, spec.bounds().maxX()); assertEquals(Integer.MIN_VALUE, spec.bounds().minY());

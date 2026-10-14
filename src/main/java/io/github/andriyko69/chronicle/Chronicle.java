@@ -17,6 +17,7 @@ import io.github.andriyko69.chronicle.causality.EnvironmentAudit;
 import io.github.andriyko69.chronicle.command.ChronicleCommands;
 import io.github.andriyko69.chronicle.inspect.InspectorListener;
 import io.github.andriyko69.chronicle.inspect.InspectorSessions;
+import io.github.andriyko69.chronicle.rollback.RollbackEngine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,6 +33,7 @@ public final class Chronicle {
     private final StorageAudit storage;
     private final EnvironmentAudit environment;
     private final InspectorSessions inspectors = new InspectorSessions();
+    private final RollbackEngine rollbacks = new RollbackEngine(() -> runtime);
 
     public Chronicle(ModContainer container) {
         version = container.getModInfo().getVersion().toString();
@@ -41,7 +43,8 @@ public final class Chronicle {
         storage.register();
         environment = new EnvironmentAudit(() -> runtime, ChronicleClock.system(), storage);
         environment.register();
-        commands = new ChronicleCommands(() -> runtime, ChronicleClock.system(), inspectors);
+        rollbacks.register();
+        commands = new ChronicleCommands(() -> runtime, ChronicleClock.system(), inspectors, rollbacks);
         NeoForge.EVENT_BUS.addListener(commands::onRegister);
         new InspectorListener(inspectors, commands::inspect).register();
         NeoForge.EVENT_BUS.addListener(this::starting);
@@ -60,6 +63,7 @@ public final class Chronicle {
         }
     }
     private void stopping(ServerStoppingEvent event) {
+        rollbacks.stop(event.getServer());
         environment.stop(event.getServer());
         storage.stop(event.getServer());
         containers.stop(event.getServer());

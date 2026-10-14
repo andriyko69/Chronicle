@@ -17,14 +17,33 @@ public final class LookupParser {
         }
         public static Context console() { return new Context(null, null); }
     }
+    public record Rollback(LookupSpec spec, boolean preview) {}
     private final ChronicleClock clock;
     public LookupParser(ChronicleClock clock) { this.clock = Objects.requireNonNull(clock); }
 
-    public LookupSpec parse(String query, Context context) {
+    public LookupSpec parse(String query, Context context) { return parse(query, context, new HashSet<>()); }
+
+    /** Lookup filters plus a {@code --preview} flag; a world-wide rollback must name its time window or users. */
+    public Rollback parseRollback(String query, Context context) {
+        if (query == null || query.length() > 2048) throw syntax("Query must be at most 2048 characters");
+        var filters = new ArrayList<String>();
+        boolean preview = false;
+        for (String token : query.isBlank() ? new String[0] : query.strip().split("\\s+")) {
+            if (!token.equals("--preview") && !token.equals("preview")) filters.add(token);
+            else if (preview) throw syntax("Duplicate preview flag");
+            else preview = true;
+        }
+        var seen = new HashSet<String>();
+        var spec = parse(String.join(" ", filters), context, seen);
+        if (spec.bounds() == null && !seen.contains("time") && !seen.contains("user"))
+            throw syntax("Global rollback requires explicit t: or u:");
+        return new Rollback(spec, preview);
+    }
+
+    private LookupSpec parse(String query, Context context, Set<String> seen) {
         if (query == null || query.length() > 2048) throw syntax("Query must be at most 2048 characters");
         String[] tokens = query.isBlank() ? new String[0] : query.strip().split("\\s+");
         if (tokens.length > 16) throw syntax("Too many filters");
-        var seen = new HashSet<String>();
         Duration duration = Duration.ofHours(24);
         String dimension = context.dimension();
         LookupSpec.Center center = context.position();
