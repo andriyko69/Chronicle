@@ -50,5 +50,8 @@ references/
 /.agent/handoffs/
 /.agent/scratch/
 /.agent/reports/
+.codex/
+.claude/
+CLAUDE.local.md
 
 *.pyc
