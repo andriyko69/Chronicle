@@ -65,10 +65,16 @@ public final class ChronicleFormatter {
                 "Timestamp: " + row.occurredAt() + "\nEvent ID: " + row.id());
         time.withStyle(style -> style.withClickEvent(new ClickEvent(ClickEvent.Action.COPY_TO_CLIPBOARD, row.id().toString())));
         boolean added = e.eventType().equals("BLOCK_PLACE") || e.eventType().equals("ITEM_PUT");
-        var actor = hover(text(safeName(e.actorId()), WHITE), "Actor type: " + e.actorType() + "\nActor UUID: "
-                + (e.actorUuid() == null ? "none" : e.actorUuid()));
-        actor.withStyle(style -> style.withClickEvent(new ClickEvent(ClickEvent.Action.COPY_TO_CLIPBOARD,
-                e.actorUuid() == null ? e.actorId() : e.actorUuid().toString())));
+        var root = e.rootActorUuid();
+        String rootName = root == null ? null : e.rootActorId() != null ? safeName(e.rootActorId()) : root.toString().substring(0, 8) + "…";
+        var actor = text(safeName(e.actorId()), WHITE);
+        if (root != null) actor.append(text(" (← ", DARK_GRAY)).append(text(rootName, YELLOW)).append(text(")", DARK_GRAY));
+        hover(actor, "Actor type: " + e.actorType() + "\nActor UUID: " + (e.actorUuid() == null ? "none" : e.actorUuid())
+                + (root == null ? "" : "\nCaused by: " + (e.rootActorId() == null ? "unknown name" : safeName(e.rootActorId()))
+                        + "\nRoot UUID: " + root + "\nClick to copy root UUID"));
+        // The responsible player is what an investigator pivots on, so the copy target follows the root actor.
+        String copied = root != null ? root.toString() : e.actorUuid() == null ? e.actorId() : e.actorUuid().toString();
+        actor.withStyle(style -> style.withClickEvent(new ClickEvent(ClickEvent.Action.COPY_TO_CLIPBOARD, copied)));
         var line = Component.empty().append(time).append(text(" ", GRAY))
                 .append(text(added ? "+" : "-", added ? GREEN : RED).withStyle(BOLD))
                 .append(text(" ", GRAY)).append(actor);

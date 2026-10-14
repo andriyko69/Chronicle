@@ -24,6 +24,7 @@ public final class LookupFormatterGameTests {
         tests.itemStylesAndLongNamesStayCompactWithCompleteTooltip();
         tests.statusDashboardColorsAllHealthStatesAndBacklogWithoutHidingFailures();
         tests.itemStatusesAndSanitizedNames();
+        tests.causalRowsShowRootActorAndCopyItsUuid();
         helper.succeed();
     }
     private static void assertTrue(boolean value) { assertTrue(value, "Expected true"); }
@@ -78,6 +79,26 @@ public final class LookupFormatterGameTests {
                 "NBT snapshot: PRESENT", "minecraft:overworld (-65, 63, -43)", "Click to teleport")) assertTrue(evidence.contains(value), value);
         assertFalse(row.getString().contains(data.id().toString()));
         assertFalse(row.getString().contains("minecraft:"));
+    }
+    private void causalRowsShowRootActorAndCopyItsUuid() {
+        UUID root = UUID.fromString("33333333-3333-4333-8333-333333333333");
+        var stone = new BlockStateSnapshot("minecraft:stone", Map.of());
+        var data = new LookupRow(EventId.generate(), NOW.minusSeconds(12), new EventEnvelope("minecraft:overworld", 10, 64, 20, "BLOCK_BREAK",
+                "ENVIRONMENT", "#tnt", null, root, "Andriyko69", "minecraft:stone"), stone, BlockStateSnapshot.AIR, BlockDeltaPayload.SnapshotStatus.NONE);
+        var row = row(data, "minecraft:overworld");
+        assertEquals("12s ago - #tnt (← Andriyko69) broke stone @ 10 64 20", row.getString());
+        var actor = node(row, "#tnt (← Andriyko69)");
+        color(actor, ChatFormatting.WHITE); color(node(row, "Andriyko69"), ChatFormatting.YELLOW);
+        click(actor, ClickEvent.Action.COPY_TO_CLIPBOARD, root.toString());
+        String evidence = ChatEvidence.text(row);
+        for (String value : List.of("Actor type: ENVIRONMENT", "Actor UUID: none", "Caused by: Andriyko69", "Root UUID: " + root))
+            assertTrue(evidence.contains(value), value);
+        var unnamed = row(new LookupRow(EventId.generate(), NOW, new EventEnvelope("minecraft:overworld", 1, 2, 3, "BLOCK_BREAK",
+                "ENVIRONMENT", "#fire", null, root, "minecraft:oak_planks"), stone, BlockStateSnapshot.AIR, BlockDeltaPayload.SnapshotStatus.NONE), null);
+        assertTrue(unnamed.getString().contains("- #fire (← 33333333…) broke oak_planks"), unnamed.getString());
+        assertTrue(ChatEvidence.text(unnamed).contains("Caused by: unknown name"));
+        var direct = row(block("BLOCK_BREAK", 0, "PLAYER", null, "minecraft:chest", BlockDeltaPayload.SnapshotStatus.NONE), null);
+        assertFalse(direct.getString().contains("←"));
     }
     private void agesDimensionsNamesAndAllNbtStatuses() {
         long[] ages = {-1, 0, 59, 60, 180, 3599, 3600, 86399, 86400, 259200};

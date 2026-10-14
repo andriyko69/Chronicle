@@ -38,7 +38,7 @@ class LookupMigrationTest {
     @Test void actualV002UpgradesPreservingRowsAndHistoricalChecksums() throws Exception {
         Path database = v002();
         try (var connection = PersistenceTest.connection(database)) { MigrationManager.migrate(connection, Instant.now()); }
-        assertEquals(4, PersistenceTest.scalar(database, "PRAGMA user_version"));
+        assertEquals(5, PersistenceTest.scalar(database, "PRAGMA user_version"));
         assertEquals(1, PersistenceTest.scalar(database, "SELECT count(*) FROM audit_events WHERE actor_id='before'"));
         assertEquals(2, PersistenceTest.scalar(database, "SELECT count(*) FROM schema_migrations WHERE applied_at='baseline'"));
         assertEquals(3, PersistenceTest.scalar(database, "SELECT count(*) FROM sqlite_master WHERE name IN ('idx_events_world_time','idx_events_time','idx_events_position_time')"));

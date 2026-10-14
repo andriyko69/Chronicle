@@ -81,16 +81,16 @@ public final class ContainerSessionManager {
             try {
                 var container = baseline.container;
                 var actor = session.actor;
-                submit(destination, container.level(), container.position(), actor.type(), actor.name(), actor.uuid(), null,
+                submit(destination, container.level(), container.position(), actor.type(), actor.name(), actor.uuid(), null, null,
                         ContainerNetDiff.between(baseline.items, container.snapshot()), clock.now());
             } catch (RuntimeException failure) { LOG.warn("Chronicle failed to flush container audit session for {}", playerId, failure); }
         }
     }
     static void submit(ChronicleRuntime destination, ServerLevel level, BlockPos pos, String actorType, String actorName,
-            UUID actorUuid, UUID rootActorUuid, List<ContainerNetDiff.Delta> deltas, Instant time) {
+            UUID actorUuid, UUID rootActorUuid, String rootActorId, List<ContainerNetDiff.Delta> deltas, Instant time) {
         for (var delta : deltas) {
             var envelope = new EventEnvelope(level.dimension().location().toString(), pos.getX(), pos.getY(), pos.getZ(),
-                    delta.eventType(), actorType, actorName, actorUuid, rootActorUuid, delta.itemId());
+                    delta.eventType(), actorType, actorName, actorUuid, rootActorUuid, rootActorId, delta.itemId());
             var result = destination.submit(AuditEvent.item(EventId.generate(), time, envelope, delta.payload()));
             if (result.status() != Submission.Status.ACCEPTED)
                 LOG.warn("Chronicle item transaction at {} was not admitted for {}: {}", pos, actorName, result.status());
@@ -114,7 +114,7 @@ public final class ContainerSessionManager {
                 try {
                     var current = container.snapshot();
                     if (record && destination != null) submit(destination, level, position, session.actor.type(), session.actor.name(),
-                            session.actor.uuid(), null, ContainerNetDiff.between(baseline.items, current), clock.now());
+                            session.actor.uuid(), null, null, ContainerNetDiff.between(baseline.items, current), clock.now());
                     baselines.add(new Baseline(container, current));
                 } catch (RuntimeException failure) {
                     LOG.warn("Chronicle failed to checkpoint container audit session for {}", entry.getKey(), failure);

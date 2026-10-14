@@ -14,6 +14,10 @@ Chronicle is in early development with player block audit hooks; rollback is not
 [features.${mod_id}]
 javaVersion="[25,26)"
 
+# Observation-only hooks for vanilla fire spread/burnout and bucket-poured lava, which post no NeoForge events.
+[[mixins]]
+config="${mod_id}.mixins.json"
+
 [[dependencies.${mod_id}]]
 modId="neoforge"
 type="required"

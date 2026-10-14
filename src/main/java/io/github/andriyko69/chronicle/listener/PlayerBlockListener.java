@@ -39,14 +39,8 @@ public final class PlayerBlockListener {
         var destination = runtime.get();
         if (destination == null) return;
         try {
-            SnapshotNbt nbt = SnapshotNbt.none();
-            if (event.getState().hasBlockEntity()) {
-                try {
-                    var entity = level.getBlockEntity(event.getPos());
-                    nbt = entity == null ? SnapshotNbt.failed() : snapshot(entity.saveWithFullMetadata(level.registryAccess()));
-                } catch (RuntimeException failure) { nbt = SnapshotNbt.failed(); }
-            }
-            submit(destination, level, event.getPos(), event.getPlayer(), "BLOCK_BREAK", state(event.getState()), BlockStateSnapshot.AIR, nbt);
+            submit(destination, level, event.getPos(), event.getPlayer(), "BLOCK_BREAK", state(event.getState()), BlockStateSnapshot.AIR,
+                    blockEntity(level, event.getPos(), event.getState()));
         } catch (RuntimeException failure) { captureFailed(failure); }
     }
     public void placing(BlockEvent.EntityPlaceEvent event) {
@@ -68,6 +62,14 @@ public final class PlayerBlockListener {
             }
         } catch (RuntimeException failure) { captureFailed(failure); }
     }
+    /** Must run before removal: the snapshot is the only remaining copy of a destroyed block entity's data. */
+    public static SnapshotNbt blockEntity(ServerLevel level, BlockPos pos, BlockState state) {
+        if (!state.hasBlockEntity()) return SnapshotNbt.none();
+        try {
+            var entity = level.getBlockEntity(pos);
+            return entity == null ? SnapshotNbt.failed() : snapshot(entity.saveWithFullMetadata(level.registryAccess()));
+        } catch (RuntimeException failure) { return SnapshotNbt.failed(); }
+    }
     private static SnapshotNbt snapshot(CompoundTag tag) {
         // NbtIo.write substitutes empty strings on UTF overflow, which would silently lose forensic data.
         return SnapshotNbt.capture(output -> NbtIo.writeUnnamedTag(tag, output));
@@ -81,7 +83,7 @@ public final class PlayerBlockListener {
         var payload = new BlockDeltaPayload(before, after, BlockDeltaPayload.Observation.HOOK_OBSERVATION, nbt.status(), nbt.bytes());
         destination.submit(AuditEvent.block(EventId.generate(), clock.now(), envelope, payload));
     }
-    private static BlockStateSnapshot state(BlockState state) {
+    public static BlockStateSnapshot state(BlockState state) {
         var properties = new TreeMap<String, String>();
         for (var property : state.getProperties()) properties.put(property.getName(), propertyValue(state, property));
         return new BlockStateSnapshot(BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString(), properties);

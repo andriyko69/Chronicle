@@ -9,14 +9,17 @@ import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.UUID;
 
-/** Big-endian framing; version 1 remains byte-compatible with pending synthetic journals. */
+/**
+ * Big-endian framing; version 1 remains byte-compatible with pending synthetic journals. Version 3 adds the root actor
+ * name and is written only when one is present, so events without one keep their version 2 bytes.
+ */
 public final class ChronicleEventCodec {
     private static final int MAGIC = 0x43485245;
     public EncodedAuditEvent encode(AuditEvent event) {
         try {
             var bytes = new ByteArrayOutputStream();
             var output = new DataOutputStream(bytes);
-            output.writeInt(MAGIC); output.writeInt(event.legacy() ? 1 : 2);
+            output.writeInt(MAGIC); output.writeInt(event.legacy() ? 1 : event.envelope().rootActorId() == null ? 2 : 3);
             output.writeLong(event.id().value().getMostSignificantBits()); output.writeLong(event.id().value().getLeastSignificantBits());
             output.writeLong(event.occurredAt().getEpochSecond()); output.writeInt(event.occurredAt().getNano());
             if (!event.legacy()) {
@@ -25,7 +28,9 @@ public final class ChronicleEventCodec {
                 output.writeInt(envelope.x()); output.writeInt(envelope.y()); output.writeInt(envelope.z());
                 BinaryValues.text(output, envelope.eventType()); BinaryValues.text(output, envelope.actorType());
                 BinaryValues.text(output, envelope.actorId()); BinaryValues.uuid(output, envelope.actorUuid());
-                BinaryValues.uuid(output, envelope.rootActorUuid()); BinaryValues.text(output, envelope.targetId());
+                BinaryValues.uuid(output, envelope.rootActorUuid());
+                if (envelope.rootActorId() != null) BinaryValues.text(output, envelope.rootActorId());
+                BinaryValues.text(output, envelope.targetId());
                 output.writeInt(event.payloadVersion());
             }
             byte[] payload = event.payload(); output.writeInt(payload.length); output.write(payload);
@@ -38,7 +43,7 @@ public final class ChronicleEventCodec {
             var input = ByteBuffer.wrap(encoded.bytes());
             if (input.getInt() != MAGIC) throw new IllegalArgumentException("Invalid event magic");
             int version = input.getInt();
-            if (version != 1 && version != 2) throw new IllegalArgumentException("Unsupported event version " + version);
+            if (version < 1 || version > 3) throw new IllegalArgumentException("Unsupported event version " + version);
             EventId id = new EventId(new UUID(input.getLong(), input.getLong()));
             long seconds = input.getLong(); int nanos = input.getInt();
             if (nanos < 0 || nanos > 999_999_999) throw new IllegalArgumentException("Invalid nanos");
@@ -46,9 +51,12 @@ public final class ChronicleEventCodec {
             AuditEvent event;
             if (version == 1) event = new AuditEvent(id, time, BinaryValues.text(input, AuditEvent.MAX_VALUE_BYTES));
             else {
-                var envelope = new EventEnvelope(BinaryValues.text(input, 512), input.getInt(), input.getInt(), input.getInt(),
-                        BinaryValues.text(input, 128), BinaryValues.text(input, 128), BinaryValues.text(input, 512),
-                        BinaryValues.uuid(input), BinaryValues.uuid(input), BinaryValues.text(input, 512));
+                String world = BinaryValues.text(input, 512);
+                int x = input.getInt(), y = input.getInt(), z = input.getInt();
+                String type = BinaryValues.text(input, 128), actorType = BinaryValues.text(input, 128), actorId = BinaryValues.text(input, 512);
+                UUID actorUuid = BinaryValues.uuid(input), rootUuid = BinaryValues.uuid(input);
+                String rootId = version == 3 ? BinaryValues.text(input, 512) : null;
+                var envelope = new EventEnvelope(world, x, y, z, type, actorType, actorId, actorUuid, rootUuid, rootId, BinaryValues.text(input, 512));
                 int payloadVersion = input.getInt();
                 event = new AuditEvent(id, time, envelope, payloadVersion, BinaryValues.bytes(input, BlockDeltaPayloadCodec.MAX_BYTES));
             }

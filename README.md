@@ -168,8 +168,39 @@ baseline, so each change is recorded once: to the remover, else the latest click
 else the earliest player whose lectern screen is still open. Changes from automation
 in the same tick, or a lectern screen action in the same tick as another player's
 click, can therefore be attributed to the wrong one of those players.
-Frames dropped after losing support, pots broken by projectiles, campfire cooking
-output and removals by other mods or entities are not observed.
+Campfire cooking output and removals by other mods or entities are not observed.
+
+## Environmental causality
+
+Blocks destroyed by explosions, fire burnout and projectiles are recorded as
+`BLOCK_BREAK` (with the block entity NBT snapshot taken before removal) together
+with any storage spill. Environmental rows use actor type `ENVIRONMENT`, an actor
+such as `#tnt`, `#creeper`, `#end_crystal`, `#fire` or `#explosion` (bed and
+respawn anchor blasts), and the responsible player as root actor when one can be
+traced: the TNT owner or projectile shooter, a player who ignited a creeper, the
+player a hostile mob was targeting, or the player who clicked an exploding bed or
+anchor. TNT primed by fire or by another explosion inherits that root.
+Explosion and projectile removals are confirmed at the next tick boundary; blocks
+that survive record nothing.
+
+Fire attribution follows the chain from ignition (flint and steel, fire charge,
+an attributed explosion, or lava a player poured with a bucket) through every
+spread step to each block it burns. Vanilla posts no events for fire spread or
+burnout, so Chronicle observes them with small, read-only Mixins on `FireBlock`,
+`BucketItem` (poured lava) and `TntBlock` (which explosion primed a TNT block). Causal memory is bounded (4,096 fire
+positions per dimension and 4,096 entities, 15-minute expiry) and cleared at
+server stop. Lightning fires and fires lit by flowing lava are unattributed.
+
+Item frames that drop after their supporting block is broken by a player,
+explosion or fire are recorded as `ITEM_TAKE` by whoever removed the support (the
+frame drops on its own support check, up to 101 of its ticks later; the watch
+counts those ticks, not wall-clock time, so server lag does not lose the drop). Decorated pots
+shattered by a projectile and items knocked out of frames by one are attributed
+to the shooting player, or to `#<projectile>` with a root actor otherwise.
+
+`u:<name>` and `u:<uuid>` match both a player's own actions and the
+environmental events they caused; such rows show as `#tnt (← Name) broke stone`,
+with the root UUID in the hover text and copied on click.
 
 ## Lookup and status commands
 

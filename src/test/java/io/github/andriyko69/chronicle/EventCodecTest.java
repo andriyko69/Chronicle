@@ -55,4 +55,21 @@ class EventCodecTest {
         assertThrows(IllegalArgumentException.class, () -> new AuditEvent(event.id(), event.occurredAt(), "\ud800"));
         assertThrows(IllegalArgumentException.class, () -> new AuditEvent(event.id(), event.occurredAt(), "x".repeat(4097)));
     }
+    @Test void rootActorNameUsesVersionThreeWithoutChangingVersionTwoBytes() throws Exception {
+        var codec = new ChronicleEventCodec();
+        var root = java.util.UUID.fromString("11111111-1111-4111-8111-111111111111");
+        var payload = new BlockDeltaPayload(new BlockStateSnapshot("minecraft:stone", java.util.Map.of()), BlockStateSnapshot.AIR,
+                BlockDeltaPayload.Observation.HOOK_OBSERVATION, BlockDeltaPayload.SnapshotStatus.NONE, null);
+        var plain = AuditEvent.block(EventId.generate(), Instant.ofEpochSecond(5), new EventEnvelope("minecraft:overworld", 1, 2, 3,
+                "BLOCK_BREAK", "ENVIRONMENT", "#tnt", null, root, "minecraft:stone"), payload);
+        var named = AuditEvent.block(EventId.generate(), Instant.ofEpochSecond(5), new EventEnvelope("minecraft:overworld", 1, 2, 3,
+                "BLOCK_BREAK", "ENVIRONMENT", "#tnt", null, root, "Андрій", "minecraft:stone"), payload);
+        assertEquals(2, ByteBuffer.wrap(codec.encode(plain).bytes()).getInt(4));
+        assertEquals(3, ByteBuffer.wrap(codec.encode(named).bytes()).getInt(4));
+        assertEquals(plain, codec.decode(codec.encode(plain)));
+        assertEquals(named, codec.decode(codec.encode(named)));
+        assertEquals("Андрій", codec.decode(codec.encode(named)).envelope().rootActorId());
+        assertThrows(IllegalArgumentException.class, () -> new EventEnvelope("minecraft:overworld", 1, 2, 3,
+                "BLOCK_BREAK", "ENVIRONMENT", "#tnt", null, null, "Orphan", "minecraft:stone"), "Root name without root UUID");
+    }
 }

@@ -186,13 +186,13 @@ class PersistenceTest {
             assertEquals(2, runtime.diagnostics().persisted()); assertEquals(1, runtime.diagnostics().deadLetters());
         }
         assertEquals(3, scalar(config.database(), "SELECT terminal_records FROM journal_checkpoint"));
-        assertEquals(1, scalar(config.database(), "SELECT count(*) FROM dead_letters WHERE attempts=1 AND schema_version=4 AND classification='PERMANENT_EVENT' AND original_payload IS NOT NULL"));
+        assertEquals(1, scalar(config.database(), "SELECT count(*) FROM dead_letters WHERE attempts=1 AND schema_version=5 AND classification='PERMANENT_EVENT' AND original_payload IS NOT NULL"));
         try (var runtime = open(config)) { assertEquals(last.value(), runtime.diagnostics().committedPosition()); }
         assertEquals(2, scalar(config.database(), "SELECT count(*) FROM legacy_audit_events"));
     }
     @Test void sqlCheckPoisonIsIsolatedWithSavepointsInSameTerminalTransaction() throws Exception {
         var config = InfrastructureConfig.defaults(root);
-        try (var runtime = open(config)) { assertEquals(4, runtime.diagnostics().schemaVersion()); }
+        try (var runtime = open(config)) { assertEquals(5, runtime.diagnostics().schemaVersion()); }
         try (var connection = connection(config.database()); var statement = connection.createStatement()) {
             statement.execute("ALTER TABLE legacy_audit_events ADD COLUMN injected_check INTEGER CHECK(synthetic_value <> 'event-2')");
         }

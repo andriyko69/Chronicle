@@ -21,8 +21,13 @@ public record LookupSql(String sql, List<Object> parameters) {
             var clauses = new ArrayList<String>();
             for (var actor : spec.actors()) {
                 if (actor.fakePlayer()) { clauses.add("actor_type = ?"); parameters.add("FAKE_PLAYER"); }
-                else if (actor.uuid() != null) { clauses.add("actor_uuid = ?"); parameters.add(actor.uuid()); }
-                else { clauses.add("actor_id = ?"); parameters.add(actor.name()); }
+                // A user matches both what they did directly and environmental events they caused (root actor).
+                else if (actor.uuid() != null) {
+                    clauses.add("actor_uuid = ? OR root_actor_uuid = ?"); parameters.add(actor.uuid()); parameters.add(actor.uuid());
+                } else {
+                    clauses.add("actor_id = ? OR root_actor_uuid IN (SELECT actor_uuid FROM actor_profiles WHERE actor_id = ?)");
+                    parameters.add(actor.name()); parameters.add(actor.name());
+                }
             }
             sql.append(" AND (").append(String.join(" OR ", clauses)).append(")");
         }

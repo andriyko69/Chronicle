@@ -121,14 +121,24 @@ public final class SQLiteStorageBackend implements StorageBackend {
                 return;
             }
             var envelope = event.envelope();
-            try (var insert = connection.prepareStatement("INSERT INTO audit_events (event_id,occurred_at_sec,occurred_at_nanos,world_id,x,y,z,event_type,actor_type,actor_id,actor_uuid,root_actor_uuid,target_id,payload_version,payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
+            try (var insert = connection.prepareStatement("INSERT INTO audit_events (event_id,occurred_at_sec,occurred_at_nanos,world_id,x,y,z,event_type,actor_type,actor_id,actor_uuid,root_actor_uuid,root_actor_id,target_id,payload_version,payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
                 insert.setBytes(1, uuidBytes(event.id().value())); insert.setLong(2, event.occurredAt().getEpochSecond());
                 insert.setInt(3, event.occurredAt().getNano()); insert.setString(4, envelope.worldId());
                 insert.setInt(5, envelope.x()); insert.setInt(6, envelope.y()); insert.setInt(7, envelope.z());
                 insert.setString(8, envelope.eventType()); insert.setString(9, envelope.actorType()); insert.setString(10, envelope.actorId());
                 insert.setBytes(11, uuidBytes(envelope.actorUuid())); insert.setBytes(12, uuidBytes(envelope.rootActorUuid()));
-                insert.setString(13, envelope.targetId()); insert.setInt(14, event.payloadVersion()); insert.setBytes(15, event.payload());
+                insert.setString(13, envelope.rootActorId()); insert.setString(14, envelope.targetId());
+                insert.setInt(15, event.payloadVersion()); insert.setBytes(16, event.payload());
                 insert.executeUpdate();
+            }
+            // Off-thread lookups resolve u:<name> against root actors through this mapping, never through live server state.
+            if (envelope.actorUuid() != null && (envelope.actorType().equals("PLAYER") || envelope.actorType().equals("FAKE_PLAYER")))
+                profile(envelope.actorId(), envelope.actorUuid());
+            if (envelope.rootActorId() != null) profile(envelope.rootActorId(), envelope.rootActorUuid());
+        }
+        private void profile(String name, UUID uuid) throws SQLException {
+            try (var insert = connection.prepareStatement("INSERT OR IGNORE INTO actor_profiles (actor_id,actor_uuid) VALUES (?,?)")) {
+                insert.setString(1, name); insert.setBytes(2, uuidBytes(uuid)); insert.executeUpdate();
             }
         }
         @Override public CommitResult commit(Checkpoint expected, List<TerminalRecord> batch) throws StorageFailure {
@@ -306,7 +316,8 @@ public final class SQLiteStorageBackend implements StorageBackend {
             if (nanos < 0 || nanos > 999_999_999) throw new IllegalArgumentException("Corrupt event nanos");
             var envelope = new EventEnvelope(rows.getString("world_id"), rows.getInt("x"), rows.getInt("y"), rows.getInt("z"),
                     rows.getString("event_type"), rows.getString("actor_type"), rows.getString("actor_id"),
-                    uuid(rows.getBytes("actor_uuid")), uuid(rows.getBytes("root_actor_uuid")), rows.getString("target_id"));
+                    uuid(rows.getBytes("actor_uuid")), uuid(rows.getBytes("root_actor_uuid")), rows.getString("root_actor_id"),
+                    rows.getString("target_id"));
             return new AuditEvent(new EventId(uuid(rows.getBytes("event_id"))), Instant.ofEpochSecond(rows.getLong("occurred_at_sec"), nanos),
                     envelope, rows.getInt("payload_version"), rows.getBytes("payload"));
         } catch (RuntimeException failure) { throw new SQLException("Corrupt stored domain event", failure); }
