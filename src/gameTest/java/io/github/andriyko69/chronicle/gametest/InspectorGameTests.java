@@ -18,7 +18,11 @@ import net.minecraft.server.level.*;
 import net.minecraft.server.players.PlayerList;
 import net.minecraft.server.players.ServerOpListEntry;
 import net.minecraft.world.*;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.decoration.ItemFrame;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.*;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.*;
@@ -131,6 +135,11 @@ public final class InspectorGameTests {
         player.setXRot(90);
         player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(bucket));
         return player.gameMode.useItem(player, player.serverLevel(), player.getMainHandItem(), InteractionHand.MAIN_HAND);
+    }
+    /** The interact-at packet path: NeoForge's hook, then the entity's own handler unless the hook canceled it. */
+    private static InteractionResult interactAt(Inspector inspector, Entity target, Vec3 at) {
+        var hooked = net.neoforged.neoforge.common.CommonHooks.onInteractEntityAt(inspector.player, target, at, InteractionHand.MAIN_HAND);
+        return hooked != null ? hooked : target.interactAt(inspector.player, at, InteractionHand.MAIN_HAND);
     }
     private static void ready(GameTestHelper helper) {
         helper.assertTrue(ChronicleTestMod.ready.isDone(), "Waiting for Chronicle startup"); ChronicleTestMod.ready.join();
@@ -460,5 +469,109 @@ public final class InspectorGameTests {
                 lines -> rows(lines, "Event ID: ") == 2 && rows(lines, " placed ") == 1 && rows(lines, " broke ") == 1,
                 "User recorded only the sentinel"))
         .thenExecute(() -> { leave(attacker); leave(user); leave(spectator); }).thenSucceed();
+    }
+
+    @GameTest(template = "empty", timeoutTicks = 600)
+    public static void waterloggingIsFoundByWaterLookupWithHostSlabState(GameTestHelper helper) {
+        var level = helper.getLevel(); var pourer = join(helper, "Waterlog");
+        var slab = helper.absolutePos(new BlockPos(2, 1, 2)); var probe = new Probe();
+        String dry = "minecraft:oak_slab[type=bottom,waterlogged=false]", wet = "minecraft:oak_slab[type=bottom,waterlogged=true]";
+        helper.startSequence().thenWaitUntil(() -> ready(helper)).thenExecute(() -> {
+            level.setBlockAndUpdate(slab, Blocks.OAK_SLAB.defaultBlockState());
+            pourer.player.setGameMode(GameType.SURVIVAL);
+            useBucket(pourer, slab, Items.WATER_BUCKET);
+            helper.assertTrue(level.getBlockState(slab).getValue(SlabBlock.WATERLOGGED), "Slab waterlogged");
+            useBucket(pourer, slab, Items.BUCKET);
+            helper.assertTrue(!level.getBlockState(slab).getValue(SlabBlock.WATERLOGGED) && pourer.player.getMainHandItem().is(Items.WATER_BUCKET), "Slab drained");
+            level.setBlockAndUpdate(slab, Blocks.AIR.defaultBlockState());
+        }).thenWaitUntil(() -> awaitConsole(helper, probe, "ch l r:global t:1h b:water u:" + pourer.id(), lines -> {
+            var mine = lines.stream().filter(line -> line.contains("Event ID: ")).toList();
+            return mine.size() == 2 && mine.stream().allMatch(line -> line.contains("Target: minecraft:water"))
+                    && rows(lines, " placed water") == 1 && rows(lines, "Old state: " + dry + "\nNew state: " + wet) == 1
+                    && rows(lines, " broke water") == 1 && rows(lines, "Old state: " + wet + "\nNew state: " + dry) == 1;
+        }, "Waiting for both waterlog rows under water with the host slab's states"))
+        .thenWaitUntil(() -> awaitConsole(helper, probe, "ch l r:global t:1h b:minecraft:water u:" + pourer.id(),
+                lines -> rows(lines, "Target: minecraft:water") == 2, "Namespaced water lookup"))
+        .thenExecute(() -> leave(pourer)).thenSucceed();
+    }
+
+    /**
+     * Equipment put on, swapped and taken off an armor stand is audited at its block position. While inspecting, clicks
+     * and damage leave the stand and its equipment untouched and show that history; once off, breaking it spills.
+     */
+    @GameTest(template = "empty", timeoutTicks = 600)
+    public static void armorStandEquipmentIsAuditedInspectableAndSpilledOnBreak(GameTestHelper helper) {
+        var level = helper.getLevel(); var owner = join(helper, "StandOwner"); var user = join(helper, "StandUser");
+        var spectator = join(helper, "StandSpectator");
+        var floor = helper.absolutePos(new BlockPos(2, 0, 2)); var standPos = floor.above();
+        var sentinelFloor = helper.absolutePos(new BlockPos(4, 0, 4));
+        var chest = new Vec3(0, 1.2, 0);
+        var probe = new Probe(); var marks = new int[3]; var stands = new Object() { ArmorStand stand; };
+        String history = "ch l r:global t:1h a:item u:" + owner.id();
+        helper.startSequence().thenWaitUntil(() -> ready(helper)).thenExecute(() -> {
+            level.setBlockAndUpdate(floor, Blocks.STONE.defaultBlockState());
+            level.setBlockAndUpdate(sentinelFloor, Blocks.STONE.defaultBlockState());
+            var stand = new ArmorStand(level, standPos.getX() + .5, standPos.getY(), standPos.getZ() + .5);
+            stand.setShowArms(true);
+            helper.assertTrue(level.addFreshEntity(stand), "Stand spawned");
+            stands.stand = stand;
+            owner.player.setGameMode(GameType.SURVIVAL);
+            for (var item : List.of(Items.DIAMOND_CHESTPLATE, Items.IRON_SWORD)) {
+                owner.player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(item));
+                helper.assertTrue(interactAt(owner, stand, chest) == InteractionResult.SUCCESS, "Equipped " + item);
+            }
+            owner.player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.GOLDEN_SWORD));
+            helper.assertTrue(interactAt(owner, stand, chest) == InteractionResult.SUCCESS
+                    && owner.player.getMainHandItem().is(Items.IRON_SWORD), "Swapped swords");
+            owner.player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            helper.assertTrue(interactAt(owner, stand, chest) == InteractionResult.SUCCESS
+                    && owner.player.getMainHandItem().is(Items.DIAMOND_CHESTPLATE), "Took the chestplate off");
+            helper.assertTrue(stand.getItemBySlot(EquipmentSlot.MAINHAND).is(Items.GOLDEN_SWORD) && stand.getItemBySlot(EquipmentSlot.CHEST).isEmpty(),
+                    "Stand holds only the golden sword");
+        }).thenWaitUntil(() -> awaitConsole(helper, probe, history, lines -> rows(lines, " put ") == 3 && rows(lines, " took ") == 2
+                && rows(lines, " in armor_stand") == 3 && rows(lines, "took ×1 iron_sword from armor_stand") == 1
+                && rows(lines, "took ×1 diamond_chestplate from armor_stand") == 1 && rows(lines, coordinates(standPos)) == 5,
+                "Waiting for equipment rows at the stand's block position"))
+        .thenExecute(() -> {
+            command(owner, "ch i on"); command(user, "ch i on"); command(spectator, "ch i on");
+            marks[0] = owner.chat.size(); marks[1] = user.chat.size(); marks[2] = spectator.chat.size();
+            var stand = stands.stand;
+            // Two survival hits within five ticks break an uninspected stand.
+            owner.player.attack(stand); owner.player.attack(stand);
+            stand.hurt(level.damageSources().playerAttack(owner.player), 1); stand.hurt(level.damageSources().playerAttack(owner.player), 1);
+            user.player.setGameMode(GameType.SURVIVAL);
+            user.player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.DIAMOND_HELMET));
+            helper.assertTrue(interactAt(user, stand, chest) == InteractionResult.SUCCESS && user.player.getMainHandItem().is(Items.DIAMOND_HELMET),
+                    "Helmet not equipped");
+            helper.assertTrue(user.player.interactOn(stand, InteractionHand.MAIN_HAND) == InteractionResult.SUCCESS, "Plain interaction canceled");
+            user.player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            helper.assertTrue(interactAt(user, stand, chest) == InteractionResult.SUCCESS && user.player.getMainHandItem().isEmpty(), "Sword not taken");
+            spectator.player.setGameMode(GameType.SPECTATOR);
+            interactAt(spectator, stand, chest);
+            spectator.player.interactOn(stand, InteractionHand.MAIN_HAND);
+            helper.assertTrue(!stand.isRemoved() && stand.getItemBySlot(EquipmentSlot.MAINHAND).is(Items.GOLDEN_SWORD)
+                    && stand.getItemBySlot(EquipmentSlot.HEAD).isEmpty() && stand.getItemBySlot(EquipmentSlot.CHEST).isEmpty(), "Stand and equipment intact");
+        }).thenWaitUntil(() -> {
+            var inspectors = List.of(owner, user, spectator);
+            for (int i = 0; i < 3; i++) {
+                var lines = inspectors.get(i).lines(marks[i]);
+                helper.assertTrue(lines.stream().filter(line -> line.startsWith("Inspecting ")).count() == 1
+                        && lines.stream().anyMatch(line -> line.contains("Inspecting " + coordinates(standPos))), "Waiting for one stand lookup " + i);
+                helper.assertTrue(lines.stream().anyMatch(line -> line.contains("Actor UUID: " + owner.id()) && line.contains(" put ")
+                        && line.contains("Item: minecraft:golden_sword")), "Stand history " + i);
+            }
+        }).thenExecute(() -> {
+            command(owner, "ch i off"); command(user, "ch i off"); command(spectator, "ch i off");
+            user.player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.EMERALD_BLOCK));
+            helper.assertTrue(rightClick(user, InteractionHand.MAIN_HAND, sentinelFloor, Direction.UP).consumesAction(), "Sentinel placed");
+            user.player.gameMode.destroyBlock(sentinelFloor.above());
+            owner.player.attack(stands.stand); owner.player.attack(stands.stand);
+            helper.assertTrue(stands.stand.isRemoved(), "Stand broken");
+            level.getEntitiesOfClass(ItemEntity.class, new AABB(standPos).inflate(3)).forEach(Entity::discard);
+        }).thenWaitUntil(() -> awaitConsole(helper, probe, history, lines -> rows(lines, " put ") == 3 && rows(lines, " took ") == 3
+                && rows(lines, "took ×1 golden_sword from armor_stand") == 1, "Waiting for the spilled golden sword"))
+        .thenWaitUntil(() -> awaitConsole(helper, probe, "ch l r:global t:1h u:" + user.id(),
+                lines -> rows(lines, "Event ID: ") == 2 && rows(lines, " placed ") == 1 && rows(lines, " broke ") == 1, "User recorded only the sentinel"))
+        .thenExecute(() -> { leave(owner); leave(user); leave(spectator); }).thenSucceed();
     }
 }

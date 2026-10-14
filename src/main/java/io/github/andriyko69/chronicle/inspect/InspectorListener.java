@@ -10,9 +10,12 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.decoration.ItemFrame;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.EntityInvulnerabilityCheckEvent;
 import net.neoforged.neoforge.event.entity.player.AttackEntityEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
@@ -35,9 +38,11 @@ public final class InspectorListener {
         NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::useItem);
         NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::breaking);
         NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::placing);
-        NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::attackFrame);
-        NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::interactFrame);
-        NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::interactFrameAt);
+        NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::attackEntity);
+        NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::interactEntity);
+        NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, true, this::interactEntityAt);
+        // Not cancelable: LOWEST so the guard is the last word on an inspector's damage.
+        NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, this::damaging);
         NeoForge.EVENT_BUS.addListener(this::loggedOut);
     }
     public void leftClick(PlayerInteractEvent.LeftClickBlock event) {
@@ -66,29 +71,41 @@ public final class InspectorListener {
         event.setCancellationResult(InteractionResult.FAIL);
         resyncInventory(player);
     }
-    /** Item frames are entities: their item pops on attack and rotates or is placed on use, with no block event. */
-    public void attackFrame(AttackEntityEvent event) {
-        if (!(event.getTarget() instanceof ItemFrame frame) || !(inspecting(event.getEntity()) instanceof ServerPlayer player)) return;
+    /**
+     * Item frames and armor stands are entities: a frame's item pops on attack and rotates or is placed on use, a
+     * stand breaks on attack and swaps equipment on use, with no block event.
+     */
+    public void attackEntity(AttackEntityEvent event) {
+        var target = event.getTarget();
+        if (!inspectable(target) || !(inspecting(event.getEntity()) instanceof ServerPlayer player)) return;
         event.setCanceled(true);
-        if (frame.level() instanceof ServerLevel level) trigger(player, level, frame::getPos);
+        if (target.level() instanceof ServerLevel level) trigger(player, level, () -> inspectedPosition(target));
     }
-    public void interactFrame(PlayerInteractEvent.EntityInteract event) {
-        if (!(event.getTarget() instanceof ItemFrame frame) || !(inspecting(event.getEntity()) instanceof ServerPlayer player)) return;
+    public void interactEntity(PlayerInteractEvent.EntityInteract event) {
+        var target = event.getTarget();
+        if (!inspectable(target) || !(inspecting(event.getEntity()) instanceof ServerPlayer player)) return;
         event.setCanceled(true);
         event.setCancellationResult(InteractionResult.SUCCESS);
         resyncInventory(player);
-        if (event.getHand() == InteractionHand.MAIN_HAND && frame.level() instanceof ServerLevel level) trigger(player, level, frame::getPos);
+        if (event.getHand() == InteractionHand.MAIN_HAND && target.level() instanceof ServerLevel level) trigger(player, level, () -> inspectedPosition(target));
     }
     /**
-     * Precedes the plain interaction packet for the same click, which performs the lookup; spectators get no
-     * EntityInteract, so this is their only lookup.
+     * Precedes the plain interaction packet for the same click. For frames that packet performs the lookup, but
+     * spectators get no EntityInteract; a client whose armor stand interact-at consumes the click never sends it.
      */
-    public void interactFrameAt(PlayerInteractEvent.EntityInteractSpecific event) {
-        if (!(event.getTarget() instanceof ItemFrame frame) || !(inspecting(event.getEntity()) instanceof ServerPlayer player)) return;
+    public void interactEntityAt(PlayerInteractEvent.EntityInteractSpecific event) {
+        var target = event.getTarget();
+        if (!inspectable(target) || !(inspecting(event.getEntity()) instanceof ServerPlayer player)) return;
         event.setCanceled(true);
         event.setCancellationResult(InteractionResult.SUCCESS);
-        if (player.isSpectator() && event.getHand() == InteractionHand.MAIN_HAND && frame.level() instanceof ServerLevel level)
-            trigger(player, level, frame::getPos);
+        resyncInventory(player);
+        if ((player.isSpectator() || target instanceof ArmorStand) && event.getHand() == InteractionHand.MAIN_HAND
+                && target.level() instanceof ServerLevel level)
+            trigger(player, level, () -> inspectedPosition(target));
+    }
+    /** Defense in depth: anything an inspector's damage reaches by another path (thorns, a projectile) leaves inspected entities intact. */
+    public void damaging(EntityInvulnerabilityCheckEvent event) {
+        if (inspectable(event.getEntity()) && inspecting(event.getSource().getEntity()) != null) event.setInvulnerable(true);
     }
     public void breaking(BlockEvent.BreakEvent event) {
         if (inspecting(event.getPlayer()) != null) event.setCanceled(true);
@@ -104,6 +121,10 @@ public final class InspectorListener {
         if (!player.hasPermissions(2) && sessions.revoke(player.getUUID()))
             player.sendSystemMessage(Component.literal("Chronicle inspector disabled: you no longer have permission.").withStyle(ChatFormatting.RED));
         return player;
+    }
+    private static boolean inspectable(Entity entity) { return entity instanceof ItemFrame || entity instanceof ArmorStand; }
+    private static BlockPos inspectedPosition(Entity entity) {
+        return entity instanceof ItemFrame frame ? frame.getPos() : entity.blockPosition().immutable();
     }
     private void trigger(ServerPlayer player, ServerLevel level, java.util.function.Supplier<BlockPos> target) {
         if (sessions.tryLookup(player.getUUID())) lookup.inspect(player, level, target.get());

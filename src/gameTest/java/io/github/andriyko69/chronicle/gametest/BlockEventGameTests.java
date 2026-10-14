@@ -158,8 +158,12 @@ public final class BlockEventGameTests {
                 helper.assertTrue(placed.size() == 1 && drained.size() == 1, "One placement and one pickup");
                 for (var event : events) {
                     var envelope = event.envelope();
-                    helper.assertTrue(envelope.actorType().equals("FAKE_PLAYER") && envelope.targetId().equals("minecraft:oak_slab")
+                    // Only the fluid changed, so the row is found under water; the payload keeps the host slab.
+                    helper.assertTrue(envelope.actorType().equals("FAKE_PLAYER") && envelope.targetId().equals("minecraft:water")
                             && envelope.x() == slab.getX() && envelope.y() == slab.getY() && envelope.z() == slab.getZ(), "Attributed slab row " + envelope);
+                    var states = delta(event);
+                    helper.assertTrue(states.before().blockId().equals("minecraft:oak_slab") && states.after().blockId().equals("minecraft:oak_slab"),
+                            "Host slab kept in payload " + states);
                 }
                 var fill = delta(placed.getFirst()); var drain = delta(drained.getFirst());
                 helper.assertTrue(fill.before().properties().get("waterlogged").equals("false")

@@ -9,11 +9,16 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 
-/** A block's state before a player changes it outside NeoForge's place/break events; never leaves the server thread. */
+/** A block's state before a player or dispenser changes it outside NeoForge's place/break events; never leaves the server thread. */
 public record BlockCapture(ServerLevel level, BlockPos pos, BlockState state, SnapshotNbt nbt) {
-    /** Returns null when the change has no player to attribute it to (dispensers) or does not run on the server thread. */
+    /** Returns null for a null player: dispensers pass none and are captured by {@link #at} around the dispense instead. */
     public static BlockCapture before(Player player, Level level, BlockPos pos) {
-        if (player == null || !(level instanceof ServerLevel server) || !server.getServer().isSameThread()) return null;
+        return player == null ? null : at(level, pos);
+    }
+
+    /** Returns null when not running on the server thread. */
+    public static BlockCapture at(Level level, BlockPos pos) {
+        if (!(level instanceof ServerLevel server) || !server.getServer().isSameThread()) return null;
         var state = server.getBlockState(pos);
         return new BlockCapture(server, pos.immutable(), state, PlayerBlockListener.blockEntity(server, pos, state));
     }

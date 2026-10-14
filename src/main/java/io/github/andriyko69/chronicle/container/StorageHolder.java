@@ -9,6 +9,9 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.Container;
 import net.minecraft.world.RandomizableContainer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.decoration.ItemFrame;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.entity.*;
@@ -58,6 +61,11 @@ public sealed interface StorageHolder {
         return new Frame(level, frame.getPos().immutable(), BuiltInRegistries.ENTITY_TYPE.getKey(frame.getType()).toString(), frame);
     }
 
+    static StorageHolder stand(ArmorStand stand) {
+        if (!(stand.level() instanceof ServerLevel level)) throw new IllegalArgumentException("Client armor stand");
+        return new Stand(level, stand.blockPosition().immutable(), BuiltInRegistries.ENTITY_TYPE.getKey(stand.getType()).toString(), stand);
+    }
+
     private static Optional<StorageHolder> block(ServerLevel level, BlockPos pos, BlockEntity entity) {
         // Reading an unrolled loot container generates its loot; an audit must not mutate the world or invent items.
         if (entity instanceof RandomizableContainer loot && loot.getLootTable() != null) return Optional.empty();
@@ -82,11 +90,23 @@ public sealed interface StorageHolder {
 
     record Frame(ServerLevel level, BlockPos position, String storageId, ItemFrame entity) implements StorageHolder {
         @Override public Object identity() { return entity; }
-        @Override public Presence presence() {
-            if (!entity.isRemoved()) return Presence.PRESENT;
-            var reason = entity.getRemovalReason();
-            return reason != null && reason.shouldDestroy() ? Presence.DESTROYED : Presence.UNKNOWN;
-        }
+        @Override public Presence presence() { return entityPresence(entity); }
         @Override public List<ItemStack> items() { return List.of(entity.getItem()); }
+    }
+
+    record Stand(ServerLevel level, BlockPos position, String storageId, ArmorStand entity) implements StorageHolder {
+        /** An armor stand has no body slot. */
+        private static final List<EquipmentSlot> SLOTS = List.of(EquipmentSlot.MAINHAND, EquipmentSlot.OFFHAND, EquipmentSlot.FEET,
+                EquipmentSlot.LEGS, EquipmentSlot.CHEST, EquipmentSlot.HEAD);
+        @Override public Object identity() { return entity; }
+        @Override public Presence presence() { return entityPresence(entity); }
+        @Override public List<ItemStack> items() { return SLOTS.stream().map(entity::getItemBySlot).toList(); }
+    }
+
+    /** An entity unloaded or moved to another dimension is not destroyed; its contents cannot be confirmed. */
+    private static Presence entityPresence(Entity entity) {
+        if (!entity.isRemoved()) return Presence.PRESENT;
+        var reason = entity.getRemovalReason();
+        return reason != null && reason.shouldDestroy() ? Presence.DESTROYED : Presence.UNKNOWN;
     }
 }

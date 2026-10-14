@@ -4,8 +4,11 @@
   "package": "io.github.andriyko69.chronicle.mixin",
   "compatibilityLevel": "JAVA_25",
   "mixins": [
+    "ArmorStandMixin",
     "BucketItemMixin",
+    "DispenserBlockMixin",
     "FireBlockMixin",
+    "RedstoneTriggerMixin",
     "TntBlockMixin"
   ],
   "injectors": {

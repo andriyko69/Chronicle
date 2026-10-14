@@ -43,6 +43,8 @@ public final class CausalMemory<K> {
         if (entry != null && entry.tick() != tick) entries.remove(key);
     }
 
+    public void remove(K key) { entries.remove(key); }
+
     public int size() { expire(); return entries.size(); }
     public void clear() { entries.clear(); }
 

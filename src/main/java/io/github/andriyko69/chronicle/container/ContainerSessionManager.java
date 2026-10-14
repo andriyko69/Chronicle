@@ -21,13 +21,25 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public final class ContainerSessionManager {
+    /**
+     * Observes item rows recorded for a player's container session, after they are submitted. They are {@code exclusive}
+     * only if no other session watched the container since the baseline: overlapping viewers' net diffs cannot show who
+     * made a change.
+     */
+    @FunctionalInterface
+    public interface DepositListener {
+        void recorded(ServerLevel level, BlockPos position, PlayerActor actor, List<ContainerNetDiff.Delta> deltas, boolean exclusive);
+    }
     private static final Logger LOG = LoggerFactory.getLogger(ContainerSessionManager.class);
-    private record Baseline(WorldContainer container, Map<ContainerNetDiff.Key, ItemTransactionPayload> items) {}
+    private record Baseline(WorldContainer container, Map<ContainerNetDiff.Key, ItemTransactionPayload> items, boolean shared) {
+        boolean watches(ServerLevel level, BlockPos position) { return container.level() == level && container.position().equals(position); }
+    }
     private record Session(AbstractContainerMenu menu, PlayerActor actor, List<Baseline> baselines) {}
     private final Map<UUID, Session> sessions = new HashMap<>();
     private final Supplier<ChronicleRuntime> runtime;
     private final ChronicleClock clock;
     private java.util.function.BiConsumer<ServerLevel, BlockPos> beforeFlush = (level, position) -> {};
+    private DepositListener deposits = (level, position, actor, deltas, exclusive) -> {};
     public ContainerSessionManager(Supplier<ChronicleRuntime> runtime, ChronicleClock clock) {
         this.runtime = runtime; this.clock = clock;
     }
@@ -44,7 +56,8 @@ public final class ContainerSessionManager {
         if (runtime.get() == null) return;
         try {
             var baselines = new ArrayList<Baseline>();
-            for (var container : WorldContainer.resolve(player, event.getContainer())) baselines.add(new Baseline(container, container.snapshot()));
+            for (var container : WorldContainer.resolve(player, event.getContainer()))
+                baselines.add(new Baseline(container, container.snapshot(), markShared(player.getUUID(), container.level(), container.position())));
             if (!baselines.isEmpty()) sessions.put(player.getUUID(), new Session(event.getContainer(), PlayerActor.capture(player), List.copyOf(baselines)));
         } catch (RuntimeException failure) { LOG.warn("Chronicle failed to open container audit session for {}", player.getUUID(), failure); }
     }
@@ -62,6 +75,7 @@ public final class ContainerSessionManager {
         if (entity instanceof ServerPlayer player && player.serverLevel().getServer().isSameThread()) flush(player.getUUID());
     }
     public void beforeFlush(java.util.function.BiConsumer<ServerLevel, BlockPos> resolver) { beforeFlush = Objects.requireNonNull(resolver); }
+    public void onRecorded(DepositListener listener) { deposits = Objects.requireNonNull(listener); }
     private void flush(UUID playerId) {
         var pending = sessions.get(playerId);
         if (pending == null) return;
@@ -81,10 +95,33 @@ public final class ContainerSessionManager {
             try {
                 var container = baseline.container;
                 var actor = session.actor;
-                submit(destination, container.level(), container.position(), actor.type(), actor.name(), actor.uuid(), null, null,
-                        ContainerNetDiff.between(baseline.items, container.snapshot()), clock.now());
+                var deltas = ContainerNetDiff.between(baseline.items, container.snapshot());
+                submit(destination, container.level(), container.position(), actor.type(), actor.name(), actor.uuid(), null, null, deltas, clock.now());
+                notifyRecorded(container.level(), container.position(), actor, deltas, !baseline.shared);
             } catch (RuntimeException failure) { LOG.warn("Chronicle failed to flush container audit session for {}", playerId, failure); }
         }
+    }
+    /** Marks every other session watching the container as shared; returns whether there was one. */
+    private boolean markShared(UUID opener, ServerLevel level, BlockPos position) {
+        boolean shared = false;
+        for (var entry : sessions.entrySet()) {
+            if (entry.getKey().equals(opener)) continue;
+            var session = entry.getValue();
+            if (session.baselines.stream().noneMatch(baseline -> baseline.watches(level, position))) continue;
+            shared = true;
+            entry.setValue(new Session(session.menu, session.actor, session.baselines.stream()
+                    .map(baseline -> baseline.watches(level, position) ? new Baseline(baseline.container, baseline.items, true) : baseline).toList()));
+        }
+        return shared;
+    }
+    private boolean watchedByOthers(UUID viewer, ServerLevel level, BlockPos position) {
+        return sessions.entrySet().stream().anyMatch(entry -> !entry.getKey().equals(viewer)
+                && entry.getValue().baselines.stream().anyMatch(baseline -> baseline.watches(level, position)));
+    }
+    private void notifyRecorded(ServerLevel level, BlockPos position, PlayerActor actor, List<ContainerNetDiff.Delta> deltas, boolean exclusive) {
+        if (deltas.isEmpty()) return;
+        try { deposits.recorded(level, position, actor, deltas, exclusive); }
+        catch (RuntimeException failure) { LOG.warn("Chronicle failed to observe recorded item rows at {}", position, failure); }
     }
     static void submit(ChronicleRuntime destination, ServerLevel level, BlockPos pos, String actorType, String actorName,
             UUID actorUuid, UUID rootActorUuid, String rootActorId, List<ContainerNetDiff.Delta> deltas, Instant time) {
@@ -113,9 +150,13 @@ public final class ContainerSessionManager {
                 touched = true;
                 try {
                     var current = container.snapshot();
-                    if (record && destination != null) submit(destination, level, position, session.actor.type(), session.actor.name(),
-                            session.actor.uuid(), null, null, ContainerNetDiff.between(baseline.items, current), clock.now());
-                    baselines.add(new Baseline(container, current));
+                    if (record && destination != null) {
+                        var deltas = ContainerNetDiff.between(baseline.items, current);
+                        submit(destination, level, position, session.actor.type(), session.actor.name(), session.actor.uuid(), null, null,
+                                deltas, clock.now());
+                        notifyRecorded(level, position, session.actor, deltas, !baseline.shared);
+                    }
+                    baselines.add(new Baseline(container, current, watchedByOthers(entry.getKey(), level, position)));
                 } catch (RuntimeException failure) {
                     LOG.warn("Chronicle failed to checkpoint container audit session for {}", entry.getKey(), failure);
                     baselines.add(baseline);

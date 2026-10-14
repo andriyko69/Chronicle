@@ -13,6 +13,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.decoration.ItemFrame;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
@@ -79,6 +80,7 @@ public final class StorageAudit {
         NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::breaking);
         NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::clickedBlock);
         NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::clickedEntity);
+        NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::clickedEntityAt);
         NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, this::attacked);
         // Packets are handled between ticks (settled at Pre); explosions and block ticks happen inside one (settled at Post).
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Pre event) -> settle(event.getServer()));
@@ -98,7 +100,7 @@ public final class StorageAudit {
         StorageHolder.spillable(level, pos).ifPresent(holder -> capture(holder, Actor.of(actor), true));
     }
 
-    /** An explosion's affected frames are destroyed by it; affected blocks spill and may drop frames they support. */
+    /** An explosion's affected frames and armor stands are destroyed by it; affected blocks spill and may drop frames they support. */
     public void exploding(ServerLevel level, List<BlockPos> blocks, List<Entity> entities, AuditActor actor) {
         if (!owned(level)) return;
         var attributed = Actor.of(actor);
@@ -108,6 +110,7 @@ public final class StorageAudit {
         }
         for (var entity : entities) {
             if (entity instanceof ItemFrame frame && !frame.isRemoved()) capture(StorageHolder.frame(frame), attributed, true);
+            else if (entity instanceof ArmorStand stand && !stand.isRemoved()) capture(StorageHolder.stand(stand), attributed, true);
         }
     }
 
@@ -115,6 +118,17 @@ public final class StorageAudit {
     public void projectileHit(ItemFrame frame, AuditActor actor) {
         if (!(frame.level() instanceof ServerLevel level) || !owned(level) || frame.isRemoved()) return;
         capture(StorageHolder.frame(frame), Actor.of(actor), false);
+    }
+
+    /**
+     * An armor stand is about to drop its equipment. A removal already claimed by an earlier hook for the same action
+     * (an explosion's Detonate) keeps its attribution.
+     */
+    public void armorStandBreaking(ArmorStand stand, AuditActor actor) {
+        if (!(stand.level() instanceof ServerLevel level) || !owned(level) || stand.isRemoved()) return;
+        var holder = StorageHolder.stand(stand);
+        var observation = observations.get(holder.identity());
+        if (observation == null || observation.remover == null) capture(holder, Actor.of(actor), true);
     }
 
     /** The block at {@code support} is about to be removed by {@code actor}; frames hanging on it will drop later. */
@@ -162,9 +176,27 @@ public final class StorageAudit {
         if (event.isCanceled() || !(event.getTarget() instanceof ItemFrame frame) || !(frame.level() instanceof ServerLevel level) || !owned(level)) return;
         capture(StorageHolder.frame(frame), Actor.of(event.getEntity()), false);
     }
+    /** Armor stand equipment is put, taken or swapped in interactAt, which only this event precedes. */
+    public void clickedEntityAt(PlayerInteractEvent.EntityInteractSpecific event) {
+        if (event.isCanceled() || !(event.getTarget() instanceof ArmorStand stand) || !(stand.level() instanceof ServerLevel level) || !owned(level)) return;
+        capture(StorageHolder.stand(stand), Actor.of(event.getEntity()), false);
+    }
+    /** A creative player's attack kills an armor stand without dropping (or passing through brokenByAnything). */
     public void attacked(AttackEntityEvent event) {
-        if (event.isCanceled() || !(event.getTarget() instanceof ItemFrame frame) || !(frame.level() instanceof ServerLevel level) || !owned(level)) return;
-        capture(StorageHolder.frame(frame), Actor.of(event.getEntity()), false);
+        if (event.isCanceled() || !(event.getTarget().level() instanceof ServerLevel level) || !owned(level)) return;
+        if (event.getTarget() instanceof ItemFrame frame) capture(StorageHolder.frame(frame), Actor.of(event.getEntity()), false);
+        else if (event.getTarget() instanceof ArmorStand stand && !stand.isRemoved()) capture(StorageHolder.stand(stand), Actor.of(event.getEntity()), false);
+    }
+
+    /** Item rows recorded for players' container sessions at a position are reported to {@code listener}. */
+    public void onRecorded(ContainerSessionManager.DepositListener listener) { containers.onRecorded(listener); }
+
+    /**
+     * Automation is about to change the storage at {@code pos}: viewers are credited with their changes so far; once it
+     * has acted ({@code record} false) they are rebaselined, so the automation's change is not attributed to them.
+     */
+    public void automating(ServerLevel level, BlockPos pos, boolean record) {
+        if (owned(level)) containers.checkpoint(level, pos, record);
     }
 
     private boolean owned(ServerLevel level) { return level.getServer().isSameThread() && runtime.get() != null; }
