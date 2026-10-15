@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 package io.github.andriyko69.chronicle.command;
 
+import io.github.andriyko69.chronicle.config.ChronicleServerConfig;
 import io.github.andriyko69.chronicle.diagnostics.*;
 import io.github.andriyko69.chronicle.event.*;
 import io.github.andriyko69.chronicle.query.*;
 import io.github.andriyko69.chronicle.rollback.RollbackEngine;
 import io.github.andriyko69.chronicle.rollback.RollbackPlan;
+import io.github.andriyko69.chronicle.runtime.ChronicleRuntime;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -154,7 +156,41 @@ public final class ChronicleFormatter {
     public static Component rollbackStarted(RollbackPlan plan) {
         return text((plan.restore() ? "Restoring " : "Rolling back ") + plan.operations() + " changes", GOLD)
                 .append(text(" (" + plan.blockChanges() + " blocks, " + plan.itemChanges() + " items) at up to "
-                        + RollbackEngine.OPERATIONS_PER_TICK + " per tick…", GRAY));
+                        + ChronicleServerConfig.current().rollbackMaxOpsPerTick() + " per tick…", GRAY));
+    }
+
+    public static Component purgePreview(long rows, LookupParser.Purge request) {
+        return text("Chronicle purge preview: ", GOLD).append(text(rows + " events", AQUA))
+                .append(text(" older than " + age(request.olderThan()) + " would be purged; nothing was deleted.", GRAY));
+    }
+
+    public static Component purgeStarted(LookupParser.Purge request, int batchSize) {
+        return text("Purging events older than " + age(request.olderThan()), GOLD)
+                .append(text(" in steps of up to " + batchSize + " rows" + (request.optimize() ? ", then optimizing" : "") + "…", GRAY));
+    }
+
+    public static List<Component> purgeReport(ChronicleRuntime.PurgeResult result) {
+        var lines = new ArrayList<Component>();
+        lines.add(text("── Chronicle purge complete ──", GOLD));
+        lines.add(metrics("Purged", "events", result.events(), "orphaned profiles", result.profiles(), "elapsed ms", result.elapsedMillis()));
+        if (result.optimized()) lines.add(result.walTruncated() ? text("Database optimized; WAL checkpointed and truncated.", GRAY)
+                : hover(text("Database optimized; WAL not fully truncated (readers were active).", YELLOW), "Run --optimize again later to reclaim it."));
+        return List.copyOf(lines);
+    }
+
+    public static Component config(ChronicleServerConfig.Snapshot config) {
+        return hover(metrics("Config", "rollback ops/tick", config.rollbackMaxOpsPerTick(), "chunk loads/tick", config.rollbackMaxChunkLoadsPerTick(),
+                        "purge batch", config.purgeBatchSize(), "auto-purge", config.autoPurgeRetentionDays() == 0 ? "off" : config.autoPurgeRetentionDays() + "d"),
+                "chronicle-server.toml\nInspector cooldown: " + config.inspectorCooldownMillis() + " ms\nIgnored entity kills: "
+                        + (config.entityKillIgnoredTypes().isEmpty() ? "none" : String.join(", ", new java.util.TreeSet<>(config.entityKillIgnoredTypes()))));
+    }
+
+    private static String age(Duration age) {
+        long seconds = age.toSeconds();
+        if (seconds % 86400 == 0) return seconds / 86400 + "d";
+        if (seconds % 3600 == 0) return seconds / 3600 + "h";
+        if (seconds % 60 == 0) return seconds / 60 + "m";
+        return seconds + "s";
     }
 
     public static List<Component> rollbackReport(RollbackEngine.Report report) {
@@ -205,7 +241,7 @@ public final class ChronicleFormatter {
     private static MutableComponent hover(MutableComponent text, String tooltip) {
         return text.withStyle(style -> style.withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal(tooltip))));
     }
-    private static Component metrics(String section, Object... pairs) {
+    private static MutableComponent metrics(String section, Object... pairs) {
         var line = text(section + ": ", GOLD);
         for (int i = 0; i < pairs.length; i += 2) {
             if (i > 0) line.append(text(" · ", DARK_GRAY));

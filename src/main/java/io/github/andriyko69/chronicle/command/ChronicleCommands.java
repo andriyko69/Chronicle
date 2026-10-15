@@ -5,6 +5,7 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import io.github.andriyko69.chronicle.config.ChronicleServerConfig;
 import io.github.andriyko69.chronicle.container.StorageAudit;
 import io.github.andriyko69.chronicle.event.ChronicleClock;
 import io.github.andriyko69.chronicle.inspect.InspectorSessions;
@@ -51,6 +52,9 @@ public final class ChronicleCommands {
                 .then(inspect("inspect")).then(inspect("i"))
                 .then(rollback("rollback", false)).then(rollback("rb", false))
                 .then(rollback("restore", true)).then(rollback("rs", true))
+                .then(Commands.literal("purge").executes(context -> purge(context.getSource(), ""))
+                        .then(Commands.argument("query", StringArgumentType.greedyString())
+                                .executes(context -> purge(context.getSource(), StringArgumentType.getString(context, "query")))))
                 .then(Commands.literal("status").executes(context -> status(context.getSource())));
     }
     private LiteralArgumentBuilder<CommandSourceStack> lookup(String name) {
@@ -110,10 +114,7 @@ public final class ChronicleCommands {
         var active = runtime.get();
         if (active == null) return unavailable(source);
         boolean apply = !request.preview();
-        if (apply && !rollbacks.reserve(server)) {
-            source.sendFailure(Component.literal("A Chronicle rollback or restore is already running; try again when it finishes."));
-            return 0;
-        }
+        if (apply && !rollbacks.reserve(server)) return busy(source);
         ServerPlayer player = source.getPlayer();
         rollbacks.afterSettle(server, () -> plan(server, source, player, active, request, restore));
         return 1;
@@ -145,6 +146,49 @@ public final class ChronicleCommands {
                 else LOG.info("Chronicle {} requested by {} finished after its requester left", restore ? "restore" : "rollback", source.getTextName());
             });
         }));
+    }
+    private int busy(CommandSourceStack source) {
+        source.sendFailure(Component.literal("A Chronicle " + rollbacks.holder(source.getServer()) + " is already running; try again when it finishes."));
+        return 0;
+    }
+    /**
+     * A purge holds the rollback slot from here until its last step commits: a rollback planned or applied meanwhile
+     * could act on, or record state for, rows the purge is deleting. Both paths start after the tick's audits settle.
+     */
+    private int purge(CommandSourceStack source, String text) {
+        var server = source.getServer();
+        if (!server.isSameThread()) return 0;
+        LookupParser.Purge request;
+        try { request = parser.parsePurge(text); }
+        catch (IllegalArgumentException failure) { source.sendFailure(Component.literal(failure.getMessage())); return 0; }
+        var active = runtime.get();
+        if (active == null) return unavailable(source);
+        ServerPlayer player = source.getPlayer();
+        if (request.preview()) {
+            rollbacks.afterSettle(server, () -> {
+                if (server.isStopped() || runtime.get() != active || !audience(server, source, player)) return;
+                deliver(source, active, active.purgeable(request.cutoff()), rows -> send(source, ChronicleFormatter.purgePreview(rows, request)), false);
+            });
+            return 1;
+        }
+        Object token = rollbacks.reservePurge(server);
+        if (token == null) return busy(source);
+        rollbacks.afterSettle(server, () -> {
+            if (server.isStopped() || runtime.get() != active || !audience(server, source, player)) { rollbacks.releasePurge(server, token); return; }
+            int batch = ChronicleServerConfig.current().purgeBatchSize();
+            send(source, ChronicleFormatter.purgeStarted(request, batch));
+            LOG.info("Chronicle purge of events older than {} requested by {}", request.olderThan(), source.getTextName());
+            active.purge(request.cutoff(), batch, request.optimize()).whenComplete((result, failure) -> server.execute(() -> {
+                if (!server.isSameThread()) return;
+                rollbacks.releasePurge(server, token);
+                if (failure == null) LOG.info("Chronicle purge complete: {}", result);
+                else LOG.warn("Chronicle purge stopped", failure);
+                if (server.isStopped() || !audience(server, source, player)) return;
+                if (failure == null) ChronicleFormatter.purgeReport(result).forEach(line -> send(source, line));
+                else source.sendFailure(Component.literal("Chronicle purge stopped: " + error(failure)));
+            }));
+        });
+        return 1;
     }
     private static boolean audience(net.minecraft.server.MinecraftServer server, CommandSourceStack source, ServerPlayer player) {
         if (!source.hasPermission(2)) return false;
@@ -184,7 +228,10 @@ public final class ChronicleCommands {
         if (!source.getServer().isSameThread()) return 0;
         var active = runtime.get();
         if (active == null) return unavailable(source);
-        return deliver(source, active, active.status(), result -> ChronicleFormatter.status(result).forEach(line -> send(source, line)), true);
+        return deliver(source, active, active.status(), result -> {
+            ChronicleFormatter.status(result).forEach(line -> send(source, line));
+            send(source, ChronicleFormatter.config(ChronicleServerConfig.current()));
+        }, true);
     }
     private <T> int deliver(CommandSourceStack source, ChronicleRuntime active, CompletionStage<T> pending,
             Consumer<T> success, boolean status) {

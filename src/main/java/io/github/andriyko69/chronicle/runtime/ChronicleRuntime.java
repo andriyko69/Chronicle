@@ -8,6 +8,7 @@ import io.github.andriyko69.chronicle.event.*;
 import io.github.andriyko69.chronicle.ingest.Submission;
 import io.github.andriyko69.chronicle.journal.*;
 import io.github.andriyko69.chronicle.journal.openhft.ChronicleQueueJournal;
+import io.github.andriyko69.chronicle.maintenance.RetentionPurge;
 import io.github.andriyko69.chronicle.persistence.*;
 import io.github.andriyko69.chronicle.query.*;
 import io.github.andriyko69.chronicle.rollback.RollbackPlan;
@@ -22,6 +23,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -35,11 +37,29 @@ import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public final class ChronicleRuntime implements AutoCloseable {
+public final class ChronicleRuntime implements AutoCloseable, RetentionPurge.Target {
     private static final Logger LOG = LoggerFactory.getLogger(ChronicleRuntime.class);
     private record Pending(EncodedAuditEvent event, CompletableFuture<JournalPosition> acknowledgement) {}
     private record Appended(JournalPosition position, CompletableFuture<JournalPosition> acknowledgement) {}
     private record RollbackStateUpdate(List<EventId> ids, boolean rolledBack, CompletableFuture<Void> done) {}
+    public record PurgeResult(long events, long profiles, boolean optimized, boolean walTruncated, long elapsedMillis) {}
+    /** Progress of one purge; touched only by the persistence worker once queued. */
+    private static final class PurgeJob {
+        final long cutoffSec, admittedBefore, deadline, began = System.nanoTime();
+        final int batch;
+        final boolean optimize;
+        final CompletableFuture<PurgeResult> done = new CompletableFuture<>();
+        JournalPosition settleTarget;
+        boolean eventsDone, profilesDone;
+        StorageWriter.ProfileKey profilesAfter;
+        long events, profiles;
+        PurgeJob(long cutoffSec, int batch, boolean optimize, long admittedBefore) {
+            this.cutoffSec = cutoffSec; this.batch = batch; this.optimize = optimize; this.admittedBefore = admittedBefore;
+            deadline = began + SETTLE_TIMEOUT.toNanos();
+        }
+    }
+    /** Profile pages are bounded separately: each examined profile costs two index probes, not one row delete. */
+    static final int PROFILE_PAGE = 1000;
     /** How long rollback planning waits for already-admitted events to become queryable. */
     static final Duration SETTLE_TIMEOUT = Duration.ofSeconds(10);
     private final InfrastructureConfig config;
@@ -61,7 +81,10 @@ public final class ChronicleRuntime implements AutoCloseable {
     private final AtomicBoolean started = new AtomicBoolean();
     /** Rollback state shares the one SQLite writer connection, so it never contends with batch commits for the lock. */
     private final ConcurrentLinkedQueue<RollbackStateUpdate> rollbackStates = new ConcurrentLinkedQueue<>();
-    private boolean rollbackStatesClosed;
+    /** Purges also run on the writer connection, one bounded step between journal batches, so ingestion never stalls behind them. */
+    private final ConcurrentLinkedQueue<PurgeJob> purges = new ConcurrentLinkedQueue<>();
+    /** Guarded by {@code rollbackStates}; set once the writer stops draining either queue. */
+    private boolean writerTasksClosed;
     /** Ingress is FIFO: once {@code appended} reaches an admission count, every event admitted before it is journaled. */
     private final AtomicLong admitted = new AtomicLong();
     private volatile long appended;
@@ -164,13 +187,40 @@ public final class ChronicleRuntime implements AutoCloseable {
         var done = new CompletableFuture<Void>();
         boolean admittedUpdate = false;
         synchronized (rollbackStates) {
-            if (!rollbackStatesClosed && ready.isDone() && !ready.isCompletedExceptionally() && !closing && fatalStorage == null && journalFailure == null) {
+            if (!writerTasksClosed && ready.isDone() && !ready.isCompletedExceptionally() && !closing && fatalStorage == null && journalFailure == null) {
                 rollbackStates.add(new RollbackStateUpdate(List.copyOf(ids), rolledBack, done));
                 admittedUpdate = true;
             }
         }
         if (!admittedUpdate) done.completeExceptionally(new RejectedExecutionException("Chronicle storage unavailable"));
         return done.minimalCompletionStage();
+    }
+    /** Counts on the query worker once every event admitted before this call is stored. Called on the server thread. */
+    public CompletionStage<Long> purgeable(Instant cutoff) {
+        long admittedBefore = admitted.get();
+        return query(reader -> {
+            awaitPersisted(admittedBefore);
+            return reader.purgeable(cutoff.getEpochSecond());
+        });
+    }
+    /**
+     * Deletes every audit row from seconds strictly before {@code cutoff}'s, then the actor profiles no remaining row
+     * names, on the persistence worker in steps of at most {@code batchSize} rows. Events admitted before this call are
+     * stored first, so none of them can reappear after the purge. Called on the server thread; each step commits on its
+     * own, so a purge that stops early leaves a consistent, partly purged database.
+     */
+    @Override public CompletionStage<PurgeResult> purge(Instant cutoff, int batchSize, boolean optimize) {
+        if (batchSize < 1) throw new IllegalArgumentException("Purge batch size must be positive");
+        var job = new PurgeJob(cutoff.getEpochSecond(), batchSize, optimize, admitted.get());
+        boolean queued = false;
+        synchronized (rollbackStates) {
+            if (!writerTasksClosed && ready.isDone() && !ready.isCompletedExceptionally() && !closing && fatalStorage == null && journalFailure == null) {
+                purges.add(job);
+                queued = true;
+            }
+        }
+        if (!queued) job.done.completeExceptionally(new RejectedExecutionException("Chronicle storage unavailable"));
+        return job.done.minimalCompletionStage();
     }
     private void awaitPersisted(long admittedBefore) throws StorageFailure {
         long deadline = System.nanoTime() + SETTLE_TIMEOUT.toNanos();
@@ -219,7 +269,8 @@ public final class ChronicleRuntime implements AutoCloseable {
         } catch (RejectedExecutionException failure) { queryResults.remove(result); result.completeExceptionally(failure); }
         return result.minimalCompletionStage();
     }
-    public ChronicleHealth health() {
+    @Override public long backlog() { return metrics.backlog; }
+    @Override public ChronicleHealth health() {
         if (journalFailure != null) return ChronicleHealth.JOURNAL_UNAVAILABLE;
         if (fatalStorage != null) return ChronicleHealth.FATAL_STORAGE;
         if (closed) return ChronicleHealth.CLOSED;
@@ -328,6 +379,8 @@ public final class ChronicleRuntime implements AutoCloseable {
                         LOG.info("Chronicle ready: schema={}, checkpoint={}, replay backlog={}", metrics.schemaVersion, metrics.committedPosition, metrics.backlog);
                     }
                     applyRollbackStates(writer);
+                    // A batch still pending here failed ambiguously; its retry verifies stored rows a purge step could delete.
+                    if (pending.isEmpty()) purgeStep(writer, journal, checkpoint);
                     if (pending.isEmpty()) {
                         JournalRecord first = cursor.next();
                         if (first == null) {
@@ -391,10 +444,13 @@ public final class ChronicleRuntime implements AutoCloseable {
             }
         } finally {
             synchronized (rollbackStates) {
-                rollbackStatesClosed = true;
+                writerTasksClosed = true;
                 RollbackStateUpdate abandoned;
                 while ((abandoned = rollbackStates.poll()) != null)
                     abandoned.done().completeExceptionally(new CancellationException("Chronicle stopped before recording rollback state"));
+                PurgeJob purge;
+                while ((purge = purges.poll()) != null)
+                    purge.done.completeExceptionally(new CancellationException("Chronicle stopped after purging " + purge.events + " events"));
             }
             if (cursor != null) try { cursor.close(); } catch (Throwable failure) { journalFailure = failure; }
             if (writer != null) try { writer.close(); } catch (Throwable failure) { fatalStorage = failure; }
@@ -412,6 +468,47 @@ public final class ChronicleRuntime implements AutoCloseable {
             } catch (RuntimeException failure) { rollbackStates.poll(); update.done().completeExceptionally(failure); continue; }
             rollbackStates.poll(); update.done().complete(null);
         }
+    }
+    /**
+     * Advances the oldest purge by one bounded step. A transient failure keeps the job for the reconnected writer and a
+     * fatal one halts persistence like a commit; anything else fails only the purge.
+     */
+    private void purgeStep(StorageWriter writer, AuditJournal journal, StorageWriter.Checkpoint checkpoint) throws StorageFailure {
+        var job = purges.peek();
+        if (job == null) return;
+        try {
+            if (job.settleTarget == null) {
+                if (appended < job.admittedBefore) { settlingPurge(job); return; }
+                // Includes backlog replayed from before this start, so a startup purge cannot race the replay.
+                job.settleTarget = journal.lastPosition();
+            }
+            if (checkpoint.position().value() < job.settleTarget.value()) { settlingPurge(job); return; }
+            if (!job.eventsDone) {
+                int deleted = writer.purgeEvents(job.cutoffSec, job.batch);
+                job.events += deleted;
+                job.eventsDone = deleted < job.batch;
+                return;
+            }
+            if (!job.profilesDone) {
+                var page = writer.pruneProfiles(job.profilesAfter, Math.min(job.batch, PROFILE_PAGE));
+                job.profiles += page.deleted();
+                job.profilesAfter = page.next();
+                job.profilesDone = page.next() == null;
+                return;
+            }
+            boolean truncated = job.optimize && writer.optimize();
+            purges.poll();
+            job.done.complete(new PurgeResult(job.events, job.profiles, job.optimize, truncated,
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - job.began)));
+        } catch (StorageFailure failure) {
+            if (failure.kind() == StorageFailure.Kind.TRANSIENT || failure.kind() == StorageFailure.Kind.FATAL) throw failure;
+            purges.poll(); job.done.completeExceptionally(failure);
+        } catch (RuntimeException failure) { purges.poll(); job.done.completeExceptionally(failure); }
+    }
+    private void settlingPurge(PurgeJob job) {
+        if (System.nanoTime() - job.deadline < 0) return;
+        purges.poll();
+        job.done.completeExceptionally(new StorageFailure(StorageFailure.Kind.TRANSIENT, "Recent events are not yet persisted; try again shortly", "NOT_SETTLED", null));
     }
     private boolean expired() { return closing && System.nanoTime() >= shutdownDeadline; }
     private void stopAcceptance() {

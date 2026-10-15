@@ -2,6 +2,7 @@
 package io.github.andriyko69.chronicle.causality;
 
 import com.mojang.authlib.GameProfile;
+import io.github.andriyko69.chronicle.config.ChronicleServerConfig;
 import io.github.andriyko69.chronicle.event.EntityKillPayload;
 import java.util.ArrayList;
 import java.util.UUID;
@@ -72,10 +73,13 @@ public final class EntityKillCapture {
     /**
      * Farm animals, pets, villagers and other player-invested entities only, so neither mob grinders nor wildlife
      * dying in the wilderness flood the log. Naturally spawned iron golems (village and iron farm golems) are recorded
-     * only when a player caused their death.
+     * only when a player caused their death. Types listed in {@code entityKillIgnoredTypes} are never recorded.
      */
     public static Scope scope(LivingEntity entity) {
         if (entity instanceof Player || entity instanceof ArmorStand) return Scope.NEVER;
+        var config = ChronicleServerConfig.current();
+        if (!config.entityKillIgnoredTypes().isEmpty()
+                && config.ignoresEntityKill(BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString())) return Scope.NEVER;
         if (entity instanceof AbstractVillager || entity instanceof Allay || entity instanceof SnowGolem
                 || entity instanceof WitherBoss || entity instanceof EnderDragon || entity instanceof Warden || entity instanceof ElderGuardian
                 || domesticated(entity) || equippedByPlayer(entity))

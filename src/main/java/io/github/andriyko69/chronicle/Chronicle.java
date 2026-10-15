@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 package io.github.andriyko69.chronicle;
 
+import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.server.ServerAboutToStartEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.minecraft.world.level.storage.LevelResource;
 import io.github.andriyko69.chronicle.event.ChronicleClock;
 import io.github.andriyko69.chronicle.runtime.ChronicleRuntime;
@@ -16,6 +18,8 @@ import io.github.andriyko69.chronicle.container.StorageAudit;
 import io.github.andriyko69.chronicle.causality.EntityKillCapture;
 import io.github.andriyko69.chronicle.causality.EnvironmentAudit;
 import io.github.andriyko69.chronicle.command.ChronicleCommands;
+import io.github.andriyko69.chronicle.config.ChronicleServerConfigSpec;
+import io.github.andriyko69.chronicle.maintenance.RetentionPurge;
 import io.github.andriyko69.chronicle.inspect.InspectorListener;
 import io.github.andriyko69.chronicle.inspect.InspectorSessions;
 import io.github.andriyko69.chronicle.rollback.RollbackEngine;
@@ -35,9 +39,11 @@ public final class Chronicle {
     private final EnvironmentAudit environment;
     private final InspectorSessions inspectors = new InspectorSessions();
     private final RollbackEngine rollbacks = new RollbackEngine(() -> runtime);
+    private final RetentionPurge retention = new RetentionPurge(() -> runtime, ChronicleClock.system());
 
-    public Chronicle(ModContainer container) {
+    public Chronicle(IEventBus modBus, ModContainer container) {
         version = container.getModInfo().getVersion().toString();
+        ChronicleServerConfigSpec.register(container, modBus);
         containers = new ContainerSessionManager(() -> runtime, ChronicleClock.system());
         containers.register();
         storage = new StorageAudit(() -> runtime, ChronicleClock.system(), containers);
@@ -46,6 +52,7 @@ public final class Chronicle {
         environment.register();
         EntityKillCapture.register();
         rollbacks.register();
+        NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> retention.tick());
         commands = new ChronicleCommands(() -> runtime, ChronicleClock.system(), inspectors, rollbacks);
         NeoForge.EVENT_BUS.addListener(commands::onRegister);
         new InspectorListener(inspectors, commands::inspect).register();
@@ -57,6 +64,11 @@ public final class Chronicle {
         try {
             var root = event.getServer().getWorldPath(LevelResource.ROOT).resolve("chronicle");
             runtime = new ChronicleRuntime(InfrastructureConfig.load(root), ChronicleClock.system(), version);
+            var server = event.getServer();
+            retention.started(runtime, new RetentionPurge.Slot() {
+                @Override public Object reserve() { return rollbacks.reservePurge(server); }
+                @Override public void release(Object token) { if (server.isSameThread()) rollbacks.releasePurge(server, token); }
+            }, server::execute);
             runtime.start().whenComplete((ignored, failure) -> {
                 if (failure != null) LOG.error("Chronicle infrastructure startup failed", failure);
             });
@@ -65,6 +77,7 @@ public final class Chronicle {
         }
     }
     private void stopping(ServerStoppingEvent event) {
+        retention.stop();
         rollbacks.stop(event.getServer());
         environment.stop(event.getServer());
         storage.stop(event.getServer());

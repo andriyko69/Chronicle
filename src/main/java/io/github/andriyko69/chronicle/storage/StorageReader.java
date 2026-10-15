@@ -15,5 +15,7 @@ public interface StorageReader extends AutoCloseable {
     default List<StoredEvent> candidates(LookupSpec spec, boolean rolledBack, int limit) throws StorageFailure { throw new UnsupportedOperationException("Rollback not supported by storage backend"); }
     default List<StoredEvent> position(String worldId, int x, int y, int z, Instant from, int limit, int offset) throws StorageFailure { throw new UnsupportedOperationException("Rollback not supported by storage backend"); }
     default StorageTotals totals() throws StorageFailure { throw new UnsupportedOperationException("Totals not supported by storage backend"); }
+    /** Audit rows (new and legacy) a purge with this cutoff would delete. */
+    default long purgeable(long cutoffSec) throws StorageFailure { throw new UnsupportedOperationException("Purge not supported by storage backend"); }
     @Override void close() throws StorageFailure;
 }

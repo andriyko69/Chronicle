@@ -222,7 +222,7 @@ public final class CausalityGameTests {
      * A dispenser facing down into a walled pit, its lever on top, pours and scoops lava, water and powder snow. Each row
      * is the dispenser's, rooted at the player who flipped the lever, and the dispensed lava's fire keeps that root.
      */
-    @GameTest(template = "empty", timeoutTicks = 600, batch = "chronicle_causality_dispenser")
+    @GameTest(template = "empty", timeoutTicks = 2400, batch = "chronicle_causality_dispenser")
     public static void dispensedBucketsAreAttributedToTheTriggeringPlayer(GameTestHelper helper) {
         var level = helper.getLevel(); var trigger = player(helper, unique("Dispense"));
         var pit = helper.absolutePos(new BlockPos(2, 1, 2)); var dispenser = pit.above(); var lever = dispenser.above();

@@ -218,6 +218,72 @@ public final class SQLiteStorageBackend implements StorageBackend {
                 throw SQLiteFailureClassifier.classify(failure);
             }
         }
+        @Override public int purgeEvents(long cutoffSec, int limit) throws StorageFailure {
+            owned();
+            if (limit < 1) throw new IllegalArgumentException("Purge limit must be positive");
+            // Strictly older seconds only: a break's spill rows settle at or after its own instant, so any surviving
+            // break keeps every spill row a later rollback pairs with it.
+            try {
+                connection.setAutoCommit(false);
+                int deleted;
+                try (var delete = connection.prepareStatement(
+                        "DELETE FROM audit_events WHERE event_id IN (SELECT event_id FROM audit_events WHERE occurred_at_sec < ? LIMIT ?)")) {
+                    delete.setLong(1, cutoffSec); delete.setInt(2, limit);
+                    deleted = delete.executeUpdate();
+                }
+                if (deleted < limit) try (var delete = connection.prepareStatement(
+                        "DELETE FROM legacy_audit_events WHERE event_id IN (SELECT event_id FROM legacy_audit_events WHERE occurred_seconds < ? LIMIT ?)")) {
+                    delete.setLong(1, cutoffSec); delete.setInt(2, limit - deleted);
+                    deleted += delete.executeUpdate();
+                }
+                connection.setAutoCommit(true);
+                return deleted;
+            } catch (SQLException failure) { throw closed(failure); }
+        }
+        @Override public ProfilePage pruneProfiles(ProfileKey after, int limit) throws StorageFailure {
+            owned();
+            if (limit < 1) throw new IllegalArgumentException("Profile page limit must be positive");
+            try {
+                connection.setAutoCommit(false);
+                var page = new ArrayList<ProfileKey>(Math.min(limit, 1024));
+                try (var select = connection.prepareStatement(after == null
+                        ? "SELECT actor_id,actor_uuid FROM actor_profiles ORDER BY actor_id,actor_uuid LIMIT ?"
+                        : "SELECT actor_id,actor_uuid FROM actor_profiles WHERE (actor_id,actor_uuid) > (?,?) ORDER BY actor_id,actor_uuid LIMIT ?")) {
+                    int index = 1;
+                    if (after != null) { select.setString(index++, after.actorId()); select.setBytes(index++, uuidBytes(after.actorUuid())); }
+                    select.setInt(index, limit);
+                    try (var rows = select.executeQuery()) { while (rows.next()) page.add(new ProfileKey(rows.getString(1), uuid(rows.getBytes(2)))); }
+                }
+                int deleted = 0;
+                // Both probes are prefix lookups on the actor and root UUID indexes; inserts share this connection,
+                // so no event can name a profile between the check and the delete.
+                try (var delete = connection.prepareStatement("DELETE FROM actor_profiles WHERE actor_id=? AND actor_uuid=?"
+                        + " AND NOT EXISTS (SELECT 1 FROM audit_events WHERE actor_uuid=actor_profiles.actor_uuid AND actor_id=actor_profiles.actor_id)"
+                        + " AND NOT EXISTS (SELECT 1 FROM audit_events WHERE root_actor_uuid=actor_profiles.actor_uuid AND root_actor_id=actor_profiles.actor_id)")) {
+                    for (var key : page) {
+                        delete.setString(1, key.actorId()); delete.setBytes(2, uuidBytes(key.actorUuid()));
+                        deleted += delete.executeUpdate();
+                    }
+                }
+                connection.setAutoCommit(true);
+                return new ProfilePage(page.size(), deleted, page.size() < limit ? null : page.getLast());
+            } catch (SQLException failure) { throw closed(failure); }
+            catch (IllegalArgumentException failure) { throw closed(new SQLException("Corrupt actor profile UUID", failure)); }
+        }
+        @Override public boolean optimize() throws StorageFailure {
+            owned();
+            try (var statement = connection.createStatement()) {
+                statement.execute("PRAGMA optimize");
+                try (var rows = statement.executeQuery("PRAGMA wal_checkpoint(TRUNCATE)")) {
+                    return rows.next() && rows.getInt(1) == 0;
+                }
+            } catch (SQLException failure) { throw closed(failure); }
+        }
+        /** Closing rolls back any open transaction, like a failed commit; the persistence loop reconnects. */
+        private StorageFailure closed(SQLException failure) {
+            try { connection.close(); } catch (SQLException close) { failure.addSuppressed(close); }
+            return SQLiteFailureClassifier.classify(failure);
+        }
         private void insertDeadLetter(TerminalRecord record, DeadLetterRecord deadLetter) throws SQLException {
             try (var insert = connection.prepareStatement("INSERT INTO dead_letters VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")) {
                 insert.setString(1, record.journal().event().id().toString()); insert.setLong(2, record.journal().position().value());
@@ -315,6 +381,17 @@ public final class SQLiteStorageBackend implements StorageBackend {
                     "SELECT (SELECT count(*) FROM audit_events) + (SELECT count(*) FROM legacy_audit_events), (SELECT count(*) FROM dead_letters)")) {
                 if (!rows.next()) throw new SQLException("Missing storage totals");
                 return new StorageTotals(rows.getLong(1), rows.getLong(2));
+            } catch (SQLException failure) { throw queryFailure(failure); }
+        }
+        @Override public long purgeable(long cutoffSec) throws StorageFailure {
+            beginQuery(ROLLBACK_QUERY_NANOS);
+            try (var select = connection.prepareStatement("SELECT (SELECT count(*) FROM audit_events WHERE occurred_at_sec < ?)"
+                    + " + (SELECT count(*) FROM legacy_audit_events WHERE occurred_seconds < ?)")) {
+                select.setLong(1, cutoffSec); select.setLong(2, cutoffSec);
+                try (var rows = select.executeQuery()) {
+                    if (!rows.next()) throw new SQLException("Missing purge count");
+                    return rows.getLong(1);
+                }
             } catch (SQLException failure) { throw queryFailure(failure); }
         }
         @Override public List<AuditEvent> recent(int limit) throws StorageFailure {

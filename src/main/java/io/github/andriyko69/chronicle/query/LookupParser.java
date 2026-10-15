@@ -18,8 +18,38 @@ public final class LookupParser {
         public static Context console() { return new Context(null, null); }
     }
     public record Rollback(LookupSpec spec, boolean preview) {}
+    /** Everything strictly before {@code cutoff}'s second is purged. */
+    public record Purge(Duration olderThan, java.time.Instant cutoff, boolean preview, boolean optimize) {}
+    /**
+     * A container's spill rows settle at the end of the tick that removed it, so a younger cutoff could separate a break
+     * from spills still being recorded. A minute also keeps a typo such as t:1s from wiping the whole log.
+     */
+    public static final Duration MIN_PURGE_AGE = Duration.ofMinutes(1);
     private final ChronicleClock clock;
     public LookupParser(ChronicleClock clock) { this.clock = Objects.requireNonNull(clock); }
+
+    /** Only an age: purges are global and never filtered by place or actor, which would leave partial histories. */
+    public Purge parsePurge(String query) {
+        if (query == null || query.length() > 256) throw syntax("Purge arguments must be at most 256 characters");
+        Duration age = null;
+        boolean preview = false, optimize = false;
+        for (String token : query.isBlank() ? new String[0] : query.strip().split("\\s+")) {
+            switch (token) {
+                case "--preview", "preview" -> { if (preview) throw syntax("Duplicate preview flag"); preview = true; }
+                case "--optimize", "optimize" -> { if (optimize) throw syntax("Duplicate optimize flag"); optimize = true; }
+                default -> {
+                    if (!token.startsWith("t:") && !token.startsWith("time:"))
+                        throw syntax("Unsupported purge argument '" + token + "'; use t:<age> [--preview] [--optimize]");
+                    if (age != null) throw syntax("Duplicate time filter");
+                    age = duration(token.substring(token.indexOf(':') + 1));
+                }
+            }
+        }
+        if (age == null) throw syntax("Purge requires an explicit age, e.g. /ch purge t:30d");
+        if (age.compareTo(MIN_PURGE_AGE) < 0) throw syntax("Purge age must be at least " + MIN_PURGE_AGE.toSeconds() + "s");
+        try { return new Purge(age, clock.now().minus(age), preview, optimize); }
+        catch (java.time.DateTimeException | ArithmeticException failure) { throw syntax("Time window outside supported range"); }
+    }
 
     public LookupSpec parse(String query, Context context) { return parse(query, context, new HashSet<>()); }
 

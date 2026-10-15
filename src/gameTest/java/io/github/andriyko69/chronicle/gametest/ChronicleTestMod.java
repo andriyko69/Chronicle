@@ -6,6 +6,11 @@ import io.github.andriyko69.chronicle.listener.PlayerBlockListener;
 import io.github.andriyko69.chronicle.container.ContainerSessionManager;
 import io.github.andriyko69.chronicle.container.StorageAudit;
 import io.github.andriyko69.chronicle.causality.EnvironmentAudit;
+import io.github.andriyko69.chronicle.command.ChronicleCommands;
+import io.github.andriyko69.chronicle.inspect.InspectorSessions;
+import io.github.andriyko69.chronicle.rollback.RollbackEngine;
+import com.mojang.brigadier.CommandDispatcher;
+import net.minecraft.commands.CommandSourceStack;
 import io.github.andriyko69.chronicle.runtime.*;
 import java.nio.file.Path;
 import java.util.UUID;
@@ -24,6 +29,12 @@ public final class ChronicleTestMod {
     /** Wall-clock offset for the causal audits, simulating ticks falling far behind real time on a lagging server. */
     static volatile java.time.Duration skew = java.time.Duration.ZERO;
     private static final ChronicleClock AUDIT_CLOCK = () -> java.time.Instant.now().plus(skew);
+    /**
+     * The production commands bound to this runtime, so a test can seed it with backdated rows and drive purges against
+     * it without touching the production database, which persists across runs.
+     */
+    static final RollbackEngine rollbacks = new RollbackEngine(() -> runtime);
+    static final CommandDispatcher<CommandSourceStack> commands = new CommandDispatcher<>();
     public ChronicleTestMod() {
         containers = new ContainerSessionManager(() -> runtime, ChronicleClock.system());
         containers.register();
@@ -34,11 +45,13 @@ public final class ChronicleTestMod {
         NeoForge.EVENT_BUS.addListener(this::starting);
         NeoForge.EVENT_BUS.addListener(this::stopping);
         new PlayerBlockListener(() -> runtime, ChronicleClock.system()).register();
+        rollbacks.register();
+        new ChronicleCommands(() -> runtime, ChronicleClock.system(), new InspectorSessions(), rollbacks).register(commands);
     }
     private void starting(ServerAboutToStartEvent event) {
         var root = Path.of(System.getProperty("chronicle.gameTestRoot")).resolve(UUID.randomUUID().toString());
         runtime = new ChronicleRuntime(InfrastructureConfig.defaults(root), ChronicleClock.system(), "gametest");
         ready = runtime.start().toCompletableFuture();
     }
-    private void stopping(ServerStoppingEvent event) { environment.stop(event.getServer()); storage.stop(event.getServer()); containers.stop(event.getServer()); if (runtime != null) runtime.close(); }
+    private void stopping(ServerStoppingEvent event) { rollbacks.stop(event.getServer()); environment.stop(event.getServer()); storage.stop(event.getServer()); containers.stop(event.getServer()); if (runtime != null) runtime.close(); }
 }

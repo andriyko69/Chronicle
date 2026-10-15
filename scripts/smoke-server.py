@@ -22,6 +22,11 @@ def positive_seconds(value):
     return seconds
 
 
+def server_config(directory):
+    """NeoForge 21.1 writes SERVER configs under config/; <world>/serverconfig/ only holds optional per-world overrides."""
+    return directory / "config" / "chronicle-server.toml"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -100,8 +105,8 @@ def main():
         ready = loaded = saved = infrastructure_ready = infrastructure_closed = False
         build_success = args.installed_directory is not None
         stop_sent = False
-        commands_sent = page_sent = False
-        status_health = status_totals = lookup_seen = page_seen = False
+        commands_sent = page_sent = purge_sent = False
+        status_health = status_totals = lookup_seen = page_seen = purge_seen = config_applied = False
         deadline = time.monotonic() + args.startup_timeout
         failure = None
         try:
@@ -137,6 +142,8 @@ def main():
                     else:
                         lookup_seen = True
                 page_seen |= page_sent and "Page 1 has no results." in line
+                purge_seen |= purge_sent and "Chronicle purge preview:" in line
+                config_applied |= "Chronicle server config applied:" in line
                 if ready and infrastructure_ready and not commands_sent:
                     commands_sent = True
                     print("Server ready; checking Chronicle status and lookup commands.", flush=True)
@@ -146,20 +153,27 @@ def main():
                     page_sent = True
                     process.stdin.write("ch p 1\n")
                     process.stdin.flush()
-                if page_seen and not stop_sent:
+                if page_seen and not purge_sent:
+                    purge_sent = True
+                    process.stdin.write("ch purge t:3650d --preview\n")
+                    process.stdin.flush()
+                if purge_seen and not stop_sent:
                     stop_sent = True
                     print("Server ready; requesting clean shutdown.", flush=True)
                     process.stdin.write("stop\n")
                     process.stdin.flush()
                     deadline = time.monotonic() + args.shutdown_timeout
             exit_code = process.wait(timeout=max(1, deadline - time.monotonic()))
+            config_generated = server_config(directory).is_file()
             if exit_code or not all((ready, loaded, saved, build_success, infrastructure_ready, infrastructure_closed,
-                                     status_health, status_totals, lookup_seen, page_seen)):
+                                     status_health, status_totals, lookup_seen, page_seen, purge_seen, config_applied,
+                                     config_generated)):
                 raise RuntimeError(
                     f"incomplete smoke test: exit={exit_code}, ready={ready}, "
                     f"chronicle_loaded={loaded}, worlds_saved={saved}, build_success={build_success}, "
                     f"infrastructure_ready={infrastructure_ready}, infrastructure_closed={infrastructure_closed}, "
-                    f"status_health={status_health}, status_totals={status_totals}, lookup={lookup_seen}, page={page_seen}"
+                    f"status_health={status_health}, status_totals={status_totals}, lookup={lookup_seen}, page={page_seen}, "
+                    f"purge_preview={purge_seen}, config_applied={config_applied}, server_config={config_generated}"
                 )
         except (RuntimeError, OSError, subprocess.TimeoutExpired, KeyboardInterrupt) as error:
             failure = str(error) or "interrupted"
@@ -197,7 +211,8 @@ def main():
         if failure:
             print(f"Smoke test failed: {failure}. Inspect {log_path}", flush=True)
             return 1
-    print("Smoke test passed: Chronicle loaded, status/lookup/page commands responded, worlds saved, clean exit.")
+    print("Smoke test passed: Chronicle loaded, status/lookup/page/purge-preview commands responded, "
+          f"{server_config(directory)} generated, worlds saved, clean exit.")
     return 0
 
 

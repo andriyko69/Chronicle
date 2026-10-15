@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 package io.github.andriyko69.chronicle.rollback;
 
+import io.github.andriyko69.chronicle.config.ChronicleServerConfig;
 import io.github.andriyko69.chronicle.event.AuditEvent;
 import io.github.andriyko69.chronicle.event.EventId;
 import io.github.andriyko69.chronicle.runtime.ChronicleRuntime;
@@ -23,9 +24,6 @@ import org.slf4j.LoggerFactory;
  */
 public final class RollbackEngine {
     private static final Logger LOG = LoggerFactory.getLogger(RollbackEngine.class);
-    public static final int OPERATIONS_PER_TICK = 250;
-    /** Synchronous chunk loads are the expensive part of a far-reaching rollback. */
-    static final int CHUNK_LOADS_PER_TICK = 8;
     /** How long a step waits for its chunk's entities before resolving its storage anyway (and skipping it if absent). */
     static final int ENTITY_WAIT_TICKS = 200;
 
@@ -56,6 +54,8 @@ public final class RollbackEngine {
 
     private final Supplier<ChronicleRuntime> runtime;
     private boolean reserved;
+    /** Set while a purge holds the slot: it deletes the rows a rollback plans against and records state on. */
+    private Object purge;
     private Job job;
     private final List<Runnable> settled = new ArrayList<>();
 
@@ -84,7 +84,29 @@ public final class RollbackEngine {
 
     public void release(MinecraftServer server) {
         owned(server);
-        if (job == null) reserved = false;
+        if (job == null && purge == null) reserved = false;
+    }
+
+    /** Claims the same slot as a rollback; the token keeps a stale completion from releasing a later holder. */
+    public Object reservePurge(MinecraftServer server) {
+        owned(server);
+        if (reserved) return null;
+        reserved = true;
+        purge = new Object();
+        return purge;
+    }
+
+    public void releasePurge(MinecraftServer server, Object token) {
+        owned(server);
+        if (token == null || purge != token) return;
+        purge = null;
+        reserved = false;
+    }
+
+    /** What holds the slot, for a refusal message. */
+    public String holder(MinecraftServer server) {
+        owned(server);
+        return purge != null ? "purge" : "rollback or restore";
     }
 
     public void start(MinecraftServer server, ChronicleRuntime active, RollbackPlan plan, Consumer<Report> done) {
@@ -120,8 +142,10 @@ public final class RollbackEngine {
         if (runtime.get() != current.runtime) { finish(current, "Chronicle storage restarted; the remaining changes were not applied"); return; }
         var steps = current.plan.steps();
         if (current.next >= steps.size() || current.halted != null) { finish(current, current.halted); return; }
-        int budget = OPERATIONS_PER_TICK;
-        int loads = CHUNK_LOADS_PER_TICK;
+        // One snapshot per slice: a config reload mid-slice must not mix budgets.
+        var limits = ChronicleServerConfig.current();
+        int budget = limits.rollbackMaxOpsPerTick();
+        int loads = limits.rollbackMaxChunkLoadsPerTick();
         var recorded = new ArrayList<EventId>();
         while (current.next < steps.size() && budget > 0) {
             var step = steps.get(current.next);
@@ -263,6 +287,7 @@ public final class RollbackEngine {
         }
         settled.clear();
         reserved = false;
+        purge = null;
     }
 
     private static String cause(Throwable failure) {
