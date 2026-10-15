@@ -1,17 +1,178 @@
 # Chronicle
 
-Chronicle is a server-side NeoForge 1.21.1 mod being developed into a forensic
-logging, inspection, querying, and rollback system for modded Minecraft.
+Chronicle is a server-side forensic audit and rollback mod for NeoForge 1.21.1
+(mod ID `chronicle`). It records who changed what, where and when, lets
+operators query and inspect that history, and can roll back or restore it.
 Correctness and forensic reliability take priority over feature velocity.
 
-**Early development:** player block break, placement, world-container net item
-transactions, container break spills and menu-less storage interactions are
-captured on the logical server thread, journaled, and persisted to SQLite. Operator lookup, pagination and status commands are available.
-Inspection and rollback are not implemented yet.
+Chronicle runs on a dedicated server and needs nothing on the client. It
+registers no gameplay content and no custom networking.
 
-Chronicle is intended to run on a dedicated server without requiring players
-to install it on their clients. It currently registers no gameplay content
-or custom networking. Client compatibility must be verified as features arrive.
+## Core guarantees
+
+- **No server-thread stalls.** Live game state is read only on the owning
+  server thread. Persistence workers receive detached snapshots, and routine
+  database I/O never blocks the tick.
+- **Durable journaling.** Admitted events are written to an off-heap OpenHFT
+  Chronicle Queue journal and replayed after a crash.
+- **Single-writer SQLite.** One writer persists journal batches into SQLite
+  (WAL, FULL synchronization, `schema=6`). Transient failures retry; permanent
+  payload failures go to a transactional dead-letter queue; corruption halts
+  progress explicitly.
+- **Fast lookups.** Queries use read-only connections and time-ordered
+  indexes, with a two-second execution deadline.
+- **Explicit failure over silent loss.** Unsupported, oversized or failed
+  captures are marked as such. Rollback never reports false success, and
+  changes it cannot prove recorded are quarantined.
+
+## What Chronicle audits
+
+### Blocks and fluids
+- Breaks and placements by players, `FakePlayer`s and the environment, with
+  canonical block states and the pre-change BlockEntity NBT snapshot.
+- Bucket pours and pickups (water, lava, powder snow) and waterlogging
+  (`b:water`).
+
+### Containers and storage
+- Net-diff container sessions (`Container`): changes over the whole open
+  interval, including both double-chest halves.
+- Container-break spills, including shulker box contents.
+- Menu-less storage: lecterns, chiseled bookshelves (exact slot indexing),
+  jukeboxes, decorated pots and campfires.
+- Item frames and glow item frames, and armor stand equipment and destruction
+  spills.
+
+### Environmental causality (`← RootPlayer`)
+Environmental rows carry actor type `ENVIRONMENT` and the responsible player as
+root actor when it can be traced:
+- TNT, including chain-primed TNT, creepers (aggro and flint-and-steel
+  ignition), end crystals, and bed and respawn anchor blasts.
+- Fire spread from ignition through every burnout, and fire from poured lava.
+- Dispenser bucket triggers and loaders.
+- Wall-mounted drops (item frames) after their support is removed.
+
+### Entity death forensics (`ENTITY_KILL`)
+Deaths of entities worth auditing are recorded when a player caused them:
+domesticated and farm animals (marked `chronicle:domesticated` through
+breeding, feeding or interaction), villagers and traders, tamed pets and
+mounts, golems, allays, bosses, and named, leashed or equipped mobs.
+Attribution covers direct kills and indirect ones (`#creeper`, `#tnt`, `#lava`,
+`#fire`, `#campfire`, `#arrow`, `#wolf`) with the root player.
+
+## Commands and permissions
+
+All commands require permission level 2 and are available as `/chronicle` or
+`/ch`.
+
+| Command | Alias | Purpose |
+| --- | --- | --- |
+| `/chronicle status` | `/ch status` | Health badge, queue and writer metrics, schema version, config summary |
+| `/chronicle lookup <filters...>` | `/ch l` | Search recorded events |
+| `/chronicle page <n>` | `/ch page <n>`, `/ch p <n>` | Next page of the last lookup |
+| `/chronicle inspect [on\|off]` | `/ch i` | Click-to-inspect mode |
+| `/chronicle rollback <filters...> [--preview]` | `/ch rb` | Undo matching changes |
+| `/chronicle restore <filters...> [--preview]` | `/ch rs` | Redo changes a rollback undid |
+| `/chronicle purge t:<age> [--preview] [--optimize]` | `/ch purge` | Delete old history |
+
+### Lookup filters
+
+| Filter | Meaning |
+| --- | --- |
+| `t:`/`time:` | Duration in `s`, `m`, `h`, `d`, `w`, compounds allowed (`1h30m`). Default 24h |
+| `r:`/`radius:` | Inclusive box radius, max 100; `r:global` removes spatial bounds and needs an explicit time, actor or block filter. Players default to radius 5 |
+| `u:`/`user:` | Comma-separated exact names, UUIDs or `#fakeplayer`; also matches environmental events the user caused |
+| `b:`/`block:` | Comma-separated block or item IDs (bare names mean `minecraft:`) |
+| `a:`/`action:` | `break`, `place`, `take`, `put`, `kill`; also `block`, `container`/`item` and signed forms (`-block`, `+container`) |
+| `dim:`/`world:` | Dimension |
+| `at:x,y,z` | Center of the spatial filter (cannot combine with `r:global`) |
+
+Console spatial lookups need both `at:` and `dim:`. Unknown, duplicate and
+malformed filters fail explicitly. Pages hold at most eight events, newest
+first; the saved lookup lasts ten minutes (pages 1-10,000). Rows have hover
+tooltips with exact details and click actions to copy values or teleport.
+
+```text
+/ch l t:1h30m r:10 u:Alice b:chest,diamond_ore a:break
+/ch l r:global t:10m u:#fakeplayer
+/ch l t:1d a:kill b:cow
+/ch page 2
+```
+
+### Inspector
+`/ch inspect` toggles an interactive mode: click a block, container, item frame
+or armor stand to see its recent history without typing a lookup. Lookups are
+rate-limited by `inspectorCooldownMillis`.
+
+### Rollback and restore
+`rollback` undoes and `restore` redoes the changes matching the filters. Use
+`--preview` first; it reports what would change and modifies nothing.
+- Work is applied on the server thread in budgeted slices per tick
+  (`rollbackMaxOpsPerTick`, `rollbackMaxChunkLoadsPerTick`).
+- One rollback, restore or purge runs at a time; a second is refused.
+- A restored BlockEntity NBT snapshot and its recorded spills are deduplicated
+  so items are never duplicated.
+- Residual fluid recession and exact chiseled bookshelf slot restoration are
+  handled.
+- If a rollback applied changes but could not record that, those changes are
+  quarantined in `rollback-quarantine.txt` next to the database and are left
+  out of later plans. Review them, then delete the file to release them.
+- `ENTITY_KILL` rows are forensic only and are not resurrected.
+
+### Purge
+`purge t:<age>` deletes events older than the age (minimum `60s`; no other
+filters). The single writer works in bounded batches (`purgeBatchSize`) between
+live journal batches, prunes `actor_profiles` that no remaining row names, and
+reports counts and elapsed time. `--preview` only counts. `--optimize` also runs
+`PRAGMA optimize` and truncates the WAL. Dead letters are not purged.
+
+## Server configuration
+
+`config/chronicle-server.toml` is generated on first start. A copy in
+`<world>/serverconfig/chronicle-server.toml` overrides it for that world.
+Values are clamped to their ranges and reload without a restart.
+
+| Key | Section | Default | Range | Purpose |
+| --- | --- | --- | --- | --- |
+| `inspectorCooldownMillis` | `inspector` | `200` | 0-10000 | Minimum ms between one player's inspector lookups |
+| `rollbackMaxOpsPerTick` | `rollback` | `250` | 10-5000 | World changes a rollback or restore applies per tick |
+| `rollbackMaxChunkLoadsPerTick` | `rollback` | `8` | 1-64 | Synchronous chunk loads per tick during rollback or restore |
+| `purgeBatchSize` | `retention` | `5000` | 100-50000 | Rows one purge step deletes before live persistence resumes |
+| `autoPurgeRetentionDays` | `retention` | `0` (off) | 0-3650 | If above 0, purge older events once after each start |
+| `entityKillIgnoredTypes` | `audit` | `[]` | entity IDs | Entity types whose deaths are never recorded, e.g. `["minecraft:chicken"]` |
+
+Storage settings (journal and database paths, queue and batch sizes) are
+separate, in the optional `<world>/chronicle/chronicle.properties` described
+under [Persistence runtime](#persistence-runtime).
+
+## Installation and JVM arguments
+
+Build with JDK 25 (`./gradlew build`) and put `build/libs/chronicle-*.jar` in
+the server's `mods/` directory. The JAR bundles OpenHFT Chronicle Queue and
+SQLite JDBC. Add the options from [chronicle-jvm.args](chronicle-jvm.args) to
+`user_jvm_args.txt`: they open the JDK internals OpenHFT needs
+(`--add-opens`, `--enable-native-access`) and disable its background releaser,
+disk monitor and analytics. Chronicle targets Java 25; the OpenHFT grants are
+also required on Java 21. Development runs and tests apply them automatically.
+
+## Known limitations
+
+- Block entity NBT snapshots are capped at 64 KiB and container item component
+  snapshots at 16 KiB. Larger ones keep block states or item identity with an
+  explicit status and no NBT; truncated NBT is never stored.
+- Causal memory for fire, poured lava and dispenser owners is in memory only,
+  bounded, expires after 15 minutes and is cleared at server stop. Lightning
+  fires and fires lit by flowing lava are unattributed.
+- Redstone-triggered dispensers are attributed to a player whose nearby
+  activation (within 32 blocks and about 5 seconds) caused the trigger; it is
+  a proximity heuristic, not proof.
+- `ENTITY_KILL` is forensic only; `/ch rb` does not resurrect entities.
+- Container sessions show the session player, not proven exclusive causality
+  (automation and other viewers can contribute). Menu-less storage changes in
+  the same tick can be attributed to the wrong nearby player.
+- Persisted NBT is opaque and not assumed safe to restore across Minecraft or
+  mod version changes.
+- Verified on Linux/WSL2 with local storage; Windows and network filesystems
+  are unverified.
 
 ## Development
 
@@ -30,7 +191,7 @@ java -version
 
 On Windows use `gradlew.bat`. First-time builds download Minecraft and prepare
 its development sources. The mod JAR is written to
-`build/libs/chronicle-0.1.0-SNAPSHOT.jar`.
+`build/libs/chronicle-1.0.0.jar`.
 
 Mod metadata is generated from `src/main/templates/META-INF/neoforge.mods.toml`.
 Edit that template and `gradle.properties`; do not edit generated build output.
