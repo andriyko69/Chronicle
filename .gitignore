@@ -39,19 +39,9 @@ run/
 repo/
 !**/src/**/repo/
 
-references/
 
 *.log
 *.log.gz
 
-# Agent-generated working artifacts
-/.agent/plans/
-/.agent/research/
-/.agent/handoffs/
-/.agent/scratch/
-/.agent/reports/
-.codex/
-.claude/
-CLAUDE.local.md
 
 *.pyc
